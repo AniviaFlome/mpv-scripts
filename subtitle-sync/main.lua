@@ -42,18 +42,16 @@ mp.add_key_binding("Ctrl+3", "calculate_difference", function()
 	end
 
 	local diff = second_ts - first_ts
-	local sign = diff >= 0 and "+" or "-"
 
 	msg(
 		string.format(
 			"Subtitle difference:\n"
 				.. "First start:  %.3f sec\n"
 				.. "Second start: %.3f sec\n\n"
-				.. "Difference: %s%.3f sec",
+				.. "Difference: %+.3f sec",
 			first_ts,
 			second_ts,
-			sign,
-			math.abs(diff)
+			diff
 		)
 	)
 end)
