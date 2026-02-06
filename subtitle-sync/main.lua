@@ -1,3 +1,13 @@
+local options = require("mp.options")
+
+local opts = {
+	key_mark_first = "Ctrl+1",
+	key_mark_second = "Ctrl+2",
+	key_calculate = "Ctrl+3",
+}
+
+options.read_options(opts, "subtitle-sync")
+
 local first_ts = nil
 local second_ts = nil
 
@@ -15,7 +25,7 @@ local function get_sub_start()
 	return v
 end
 
-mp.add_key_binding("Ctrl+1", "mark_first_sub", function()
+mp.add_key_binding(opts.key_mark_first, "mark_first_sub", function()
 	local t = get_sub_start()
 	if not t then
 		return
@@ -25,7 +35,7 @@ mp.add_key_binding("Ctrl+1", "mark_first_sub", function()
 	msg(string.format("First subtitle start time: %.3f seconds", t))
 end)
 
-mp.add_key_binding("Ctrl+2", "mark_second_sub", function()
+mp.add_key_binding(opts.key_mark_second, "mark_second_sub", function()
 	local t = get_sub_start()
 	if not t then
 		return
@@ -35,7 +45,7 @@ mp.add_key_binding("Ctrl+2", "mark_second_sub", function()
 	msg(string.format("Second subtitle start time: %.3f seconds", t))
 end)
 
-mp.add_key_binding("Ctrl+3", "calculate_difference", function()
+mp.add_key_binding(opts.key_calculate, "calculate_difference", function()
 	if not first_ts or not second_ts then
 		msg("Mark both subtitles first with Ctrl+1 and Ctrl+2.")
 		return
