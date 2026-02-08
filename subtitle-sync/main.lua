@@ -25,25 +25,23 @@ local function get_sub_start()
 	return v
 end
 
-mp.add_key_binding(opts.key_mark_first, "mark_first_sub", function()
+local function mark_sub(which)
 	local t = get_sub_start()
 	if not t then
 		return
 	end
 
-	first_ts = t
-	msg(string.format("First subtitle start time: %.3f seconds", t))
-end)
-
-mp.add_key_binding(opts.key_mark_second, "mark_second_sub", function()
-	local t = get_sub_start()
-	if not t then
-		return
+	if which == 1 then
+		first_ts = t
+		msg(string.format("First subtitle start time: %.3f seconds", t))
+	elseif which == 2 then
+		second_ts = t
+		msg(string.format("Second subtitle start time: %.3f seconds", t))
 	end
+end
 
-	second_ts = t
-	msg(string.format("Second subtitle start time: %.3f seconds", t))
-end)
+mp.add_key_binding(opts.key_mark_first, "mark_first_sub", function() mark_sub(1) end)
+mp.add_key_binding(opts.key_mark_second, "mark_second_sub", function() mark_sub(2) end)
 
 mp.add_key_binding(opts.key_calculate, "calculate_difference", function()
 	if not first_ts or not second_ts then
