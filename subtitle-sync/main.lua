@@ -1,3 +1,4 @@
+local mp = require("mp")
 local options = require("mp.options")
 
 local opts = {
@@ -11,15 +12,15 @@ options.read_options(opts, "subtitle-sync")
 local first_ts = nil
 local second_ts = nil
 
-local function msg(text)
+local function notify(text)
 	mp.osd_message(text, 2)
-	print("[submarkdiff] " .. text)
+	print("[subtitle-sync] " .. text)
 end
 
 local function get_sub_start()
 	local v = mp.get_property_number("sub-start")
 	if v == nil then
-		msg("No subtitle is currently displayed.")
+		notify("No subtitle is currently displayed.")
 		return nil
 	end
 	return v
@@ -33,10 +34,10 @@ local function mark_sub(which)
 
 	if which == 1 then
 		first_ts = t
-		msg(string.format("First subtitle start time: %.3f seconds", t))
+		notify(string.format("First subtitle start time: %.3f seconds", t))
 	elseif which == 2 then
 		second_ts = t
-		msg(string.format("Second subtitle start time: %.3f seconds", t))
+		notify(string.format("Second subtitle start time: %.3f seconds", t))
 	end
 end
 
@@ -45,7 +46,7 @@ mp.add_key_binding(opts.key_mark_second, "mark_second_sub", function() mark_sub(
 
 mp.add_key_binding(opts.key_calculate, "calculate_difference", function()
 	if not first_ts or not second_ts then
-		msg("Mark both subtitles first with Ctrl+1 and Ctrl+2.")
+		notify("Mark both subtitles first with Ctrl+1 and Ctrl+2.")
 		return
 	end
 

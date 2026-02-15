@@ -2,4 +2,4 @@
 
 My mpv scripts.
 
-See my [nix repository](https://github.com/AniviaFlome/nix-repository) for nix packages.
+See [nix repository](https://github.com/AniviaFlome/nix-repository) for nix packages.

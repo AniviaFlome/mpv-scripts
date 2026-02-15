@@ -10,6 +10,7 @@ Better version of [mpv-cheatsheet](https://github.com/ento/mpv-cheatsheet)
 - `l` / `RIGHT` - Next section
 - `h` / `LEFT` - Previous section
 - `+` / `-` - Zoom
+- `/` - Search (type to filter, `ESC` to cancel, `ENTER` to lock results)
 
 ## Options
 

@@ -1,13 +1,9 @@
 -- mpv-cheatsheet
 -- dynamically displays active keybindings in an OSD overlay
+-- features: single-category view, section navigation, live search
 
 local mp = require 'mp'
-local utils = require 'mp.utils'
 local msg = require 'mp.msg'
-
-local function script_config()
-    return opts
-end
 
 local opts = {
     font = "monospace",
@@ -19,21 +15,30 @@ local opts = {
 
 local active = false
 local overlay = mp.create_osd_overlay("ass-events")
-local display_list = {}
-local current_scroll_idx = 1
-local max_key_lens = {} -- Store max key length per category
 
--- Usage hints (Static data moved out of draw loop)
+-- Data: populated by refresh_bindings
+local sorted_cats = {}   -- ordered category names
+local grouped = {}        -- cat_name -> list of {key, cmd, comment}
+local max_key_lens = {}   -- cat_name -> max key string length
+
+-- View state
+local current_cat_idx = 1
+local current_scroll_idx = 1
+local search_query = ""
+local search_mode = false
+
+-- Usage hints
 local usage = {
     "ESC / ? : close",
     "j / DOWN : scroll down",
     "k / UP : scroll up",
     "l / RIGHT : next section",
     "h / LEFT : prev section",
-    "+ / - : zoom"
+    "+ / - : zoom",
+    "/ : search",
 }
 
--- Category definitions with patterns for easier maintenance
+-- Category definitions with patterns
 local categories = {
     { name = "Scripts", patterns = { "script", "^script_" } },
     { name = "Navigation", patterns = { "seek" } },
@@ -41,10 +46,8 @@ local categories = {
     { name = "Subtitles", patterns = { "sub" } },
     { name = "Video", patterns = { "video", "contrast", "gamma", "brightness" } },
     { name = "General", patterns = { "quit", "screenshot", "playlist" } },
-    { name = "Ignored", patterns = { "ignore" } }
 }
 
--- Simplified category detection
 local function detect_category(cmd, comment)
     if not cmd then return "Other" end
     local lower_cmd = cmd:lower()
@@ -57,15 +60,14 @@ local function detect_category(cmd, comment)
             end
         end
     end
-    
+
     return "Other"
 end
 
 local function refresh_bindings()
     local bindings = mp.get_property_native("input-bindings", {})
-    local grouped = {}
-    local cats = {}
-    local cat_set = {}
+    grouped = {}
+    sorted_cats = {}
     max_key_lens = {}
 
     for _, bind in ipairs(bindings) do
@@ -74,61 +76,80 @@ local function refresh_bindings()
             local comment = bind.comment or bind.cmd
             local cat = detect_category(bind.cmd, comment)
 
-            if cat == "Scripts" then
-                -- Combined gsub for efficiency
-                comment = comment:gsub("^script[%-_]binding ", ""):gsub("^script[%-_]message ", "")
-            end
+            -- Strip noisy command prefixes from display text
+            comment = comment
+                :gsub("^no%-osd ", "")
+                :gsub("^nonscalable ", "")
+                :gsub("^osd%-[%w%-]+ ", "")
+                :gsub("^repeatable ", "")
+                :gsub("^script[%-_]binding ", "")
+                :gsub("^script[%-_]message[%-to]* ", "")
 
             if not grouped[cat] then
                 grouped[cat] = {}
                 max_key_lens[cat] = 0
-                if not cat_set[cat] then
-                    table.insert(cats, cat)
-                    cat_set[cat] = true
-                end
+                table.insert(sorted_cats, cat)
             end
-            
+
             local key_len = #key
             if key_len > max_key_lens[cat] then
                 max_key_lens[cat] = key_len
             end
-            
-            table.insert(grouped[cat], {key = key, cmd = bind.cmd, comment = comment})
+
+            table.insert(grouped[cat], { key = key, cmd = bind.cmd, comment = comment })
         end
     end
-    
+
     -- Custom sort order
     local sort_order = {
-        ["General"] = 1,
-        ["Navigation"] = 2,
-        ["Audio"] = 3,
-        ["Video"] = 4,
-        ["Subtitles"] = 5,
-        ["Scripts"] = 6,
+        ["General"] = 1, ["Navigation"] = 2, ["Audio"] = 3,
+        ["Video"] = 4, ["Subtitles"] = 5, ["Scripts"] = 6,
         ["Other"] = 99
     }
-    
-    table.sort(cats, function(a, b)
+
+    table.sort(sorted_cats, function(a, b)
         local oa = sort_order[a] or 50
         local ob = sort_order[b] or 50
         if oa ~= ob then return oa < ob end
         return a < b
     end)
-    
-    -- Flatten into display list with types
-    display_list = {}
-    for _, cat in ipairs(cats) do
-        table.insert(display_list, {type = "header", text = cat})
-        
+
+    -- Sort items within each category
+    for _, cat in ipairs(sorted_cats) do
         table.sort(grouped[cat], function(a, b) return a.key < b.key end)
-        
-        for _, item in ipairs(grouped[cat]) do
-            table.insert(display_list, {type = "item", key = item.key, comment = item.comment, category = cat})
-        end
-        
-        -- Add an empty line between cats
-        table.insert(display_list, {type = "spacer"})
     end
+end
+
+-- Get items to display based on current mode (category view or search)
+local function get_visible_items()
+    if search_mode and search_query ~= "" then
+        -- Search across all categories
+        local results = {}
+        local query = search_query:lower()
+        local search_max_key_len = 0
+
+        for _, cat in ipairs(sorted_cats) do
+            for _, item in ipairs(grouped[cat] or {}) do
+                if item.key:lower():find(query, 1, true) or item.comment:lower():find(query, 1, true) then
+                    table.insert(results, { key = item.key, comment = item.comment, category = cat })
+                    if #item.key > search_max_key_len then
+                        search_max_key_len = #item.key
+                    end
+                end
+            end
+        end
+
+        return results, "Search: " .. search_query, search_max_key_len
+    end
+
+    -- Single category view
+    if #sorted_cats == 0 then return {}, "No bindings", 10 end
+
+    local cat = sorted_cats[current_cat_idx] or sorted_cats[1]
+    local items = grouped[cat] or {}
+    local mkl = max_key_lens[cat] or 10
+
+    return items, cat, mkl
 end
 
 local function draw_menu()
@@ -139,68 +160,80 @@ local function draw_menu()
 
     local success, err = xpcall(function()
         local ass = {}
-        
-        local style = string.format("{\\an7\\pos(10,10)\\bord1\\shad1\\xshad0\\yshad1\\1a&H00&\\3a&H00&\\4a&H99&\\1c&Heeeeee&\\3c&H111111&\\4c&H000000&\\fn%s\\fs%d\\fsp0\\q2}", 
-            opts.font, opts.font_size)
-            
+
+        local style = string.format(
+            "{\\an7\\pos(10,10)\\bord1\\shad1\\xshad0\\yshad1"
+            .. "\\1a&H00&\\3a&H00&\\4a&H99&"
+            .. "\\1c&Heeeeee&\\3c&H111111&\\4c&H000000&"
+            .. "\\fn%s\\fs%d\\fsp0\\q2}",
+            opts.font, opts.font_size
+        )
+
         table.insert(ass, style)
-        
-        -- Loop
+
+        local items, title, mkl = get_visible_items()
+
+        -- Header: category name [idx/total] or search prompt
+        local header
+        if search_mode then
+            header = title
+        else
+            header = string.format("%s  [%d/%d]", title, current_cat_idx, #sorted_cats)
+        end
+        table.insert(ass, "{\\b1}" .. header .. "{\\b0}\\N")
+        table.insert(ass, "\\N") -- blank line after header
+
+        -- Render items with scrolling
+        local max_lines = 38
+        local total = #items
         local start = current_scroll_idx
-        local max_lines = 40 -- Rough limit to prevent overflow offscreen if too many lines
-        
         local lines_rendered = 0
-        local idx = start
-        
-        while idx <= #display_list do
-            if lines_rendered > max_lines then break end
-            
-            local item = display_list[idx]
-            
-            if item.type == "header" then
-               table.insert(ass, "{\\b1}" .. (item.text or "") .. "{\\b0}")
-            elseif item.type == "item" then
-                local max_len = max_key_lens[item.category] or 10
-                local key_len = #(item.key or "")
-                local padding = string.rep(" ", max_len - key_len + 2) -- +2 for gap
-                
-                -- Escape special chars (assdraw.escape)
-                local key = (item.key or ""):gsub("[{}\\]", "")
-                local comment = (item.comment or ""):gsub("[{}\\]", "")
-                
-                table.insert(ass, key .. padding .. comment)
-            elseif item.type == "spacer" then
-                table.insert(ass, " ")
-            end
-            
-            table.insert(ass, "\\N")
-            
-            idx = idx + 1
+
+        for i = start, total do
+            if lines_rendered >= max_lines then break end
+
+            local item = items[i]
+            local key_len = #(item.key or "")
+            local padding = string.rep(" ", mkl - key_len + 2)
+
+            local key = (item.key or ""):gsub("[{}\\]", "")
+            local comment = (item.comment or ""):gsub("[{}\\]", "")
+
+            table.insert(ass, key .. padding .. comment .. "\\N")
             lines_rendered = lines_rendered + 1
         end
-        
+
+        if total == 0 then
+            table.insert(ass, "(no results)\\N")
+        end
+
+        -- Usage panel (top-right)
         local w, h = mp.get_osd_size()
         if w and h then
-             -- \an9 pos(w-10, 10)
-             local usage_style = string.format("{\\an9\\pos(%d,10)\\fs%d\\bord1\\shad1\\1c&Heeeeee&\\4a&H99&}", w - 10, opts.font_size - 2)
-             table.insert(ass, usage_style)
-             table.insert(ass, "USAGE:\\N")
-             for _, u in ipairs(usage) do
-                 table.insert(ass, u .. "\\N")
-             end
+            local usage_style = string.format(
+                "{\\an9\\pos(%d,10)\\fs%d\\bord1\\shad1\\1c&Heeeeee&\\4a&H99&}",
+                w - 10, opts.font_size - 2
+            )
+            table.insert(ass, usage_style)
+            table.insert(ass, "USAGE:\\N")
+            for _, u in ipairs(usage) do
+                table.insert(ass, u .. "\\N")
+            end
         end
 
         overlay.data = table.concat(ass)
         overlay:update()
     end, debug.traceback)
-    
-     if not success then
+
+    if not success then
         msg.error("Cheatsheet draw error: " .. tostring(err))
     end
 end
 
+-- Navigation
 local function scroll_down()
-    if current_scroll_idx < #display_list then
+    local items = get_visible_items()
+    if current_scroll_idx < #items then
         current_scroll_idx = current_scroll_idx + 1
         draw_menu()
     end
@@ -209,6 +242,24 @@ end
 local function scroll_up()
     if current_scroll_idx > 1 then
         current_scroll_idx = current_scroll_idx - 1
+        draw_menu()
+    end
+end
+
+local function next_section()
+    if search_mode then return end
+    if current_cat_idx < #sorted_cats then
+        current_cat_idx = current_cat_idx + 1
+        current_scroll_idx = 1
+        draw_menu()
+    end
+end
+
+local function prev_section()
+    if search_mode then return end
+    if current_cat_idx > 1 then
+        current_cat_idx = current_cat_idx - 1
+        current_scroll_idx = 1
         draw_menu()
     end
 end
@@ -225,51 +276,67 @@ local function decrease_font_size()
     end
 end
 
--- Section jump (find next header)
-local function next_section()
-    for i = current_scroll_idx + 1, #display_list do
-        if display_list[i].type == "header" then
-            current_scroll_idx = i
-            draw_menu()
-            return
-        end
-    end
-end
-
-local function prev_section()
-    local last_header_idx = 1
-    for i = current_scroll_idx - 1, 1, -1 do
-        if display_list[i].type == "header" then
-            last_header_idx = i
-            break
-        end
-    end
-    current_scroll_idx = last_header_idx
+-- Search
+local function exit_search()
+    search_mode = false
+    search_query = ""
+    current_scroll_idx = 1
     draw_menu()
 end
 
--- Key bindings config
-local key_bindings = {
-    { key = "ESC", name = "cheatsheet-close", fn = function() toggle_menu() end },
-    { key = "q", name = "cheatsheet-quit", fn = function() toggle_menu() end },
-    { key = "j", name = "cheatsheet-down", fn = scroll_down, repeatable = true },
-    { key = "DOWN", name = "cheatsheet-down-arrow", fn = scroll_down, repeatable = true },
-    { key = "s", name = "cheatsheet-down-s", fn = scroll_down, repeatable = true },
-    { key = "k", name = "cheatsheet-up", fn = scroll_up, repeatable = true },
-    { key = "UP", name = "cheatsheet-up-arrow", fn = scroll_up, repeatable = true },
-    { key = "w", name = "cheatsheet-up-w", fn = scroll_up, repeatable = true },
-    { key = "l", name = "cheatsheet-next", fn = next_section, repeatable = true },
-    { key = "RIGHT", name = "cheatsheet-next-arrow", fn = next_section, repeatable = true },
-    { key = "d", name = "cheatsheet-next-d", fn = next_section, repeatable = true },
-    { key = "h", name = "cheatsheet-prev", fn = prev_section, repeatable = true },
-    { key = "LEFT", name = "cheatsheet-prev-arrow", fn = prev_section, repeatable = true },
-    { key = "a", name = "cheatsheet-prev-a", fn = prev_section, repeatable = true },
-    { key = "+", name = "cheatsheet-zoom-in", fn = increase_font_size, repeatable = true },
-    { key = "=", name = "cheatsheet-zoom-in-eq", fn = increase_font_size, repeatable = true },
-    { key = "-", name = "cheatsheet-zoom-out", fn = decrease_font_size, repeatable = true },
-}
+local function handle_search_input(event)
+    if not event or not event.event then return end
 
-function toggle_menu()
+    if event.event == "press" then
+        local key = event.key_name
+
+        if key == "ESC" or key == "ENTER" or key == "KP_ENTER" then
+            -- ESC exits search, ENTER "locks in" results (stays in search view)
+            if key == "ESC" then
+                exit_search()
+            else
+                -- Keep results visible, exit search input mode
+                -- Remove text input, keep search_mode true to show results
+                mp.set_osd_ass(0, 0, "")
+            end
+            mp.remove_key_binding("cheatsheet-search-input")
+            return
+        elseif key == "BS" or key == "DEL" then
+            if #search_query > 0 then
+                search_query = search_query:sub(1, -2)
+            end
+            if #search_query == 0 then
+                exit_search()
+                mp.remove_key_binding("cheatsheet-search-input")
+                return
+            end
+        elseif #key == 1 then
+            -- Single printable character
+            search_query = search_query .. key
+        elseif key == "SPACE" then
+            search_query = search_query .. " "
+        else
+            return -- ignore non-printable keys
+        end
+
+        current_scroll_idx = 1
+        draw_menu()
+    end
+end
+
+local function start_search()
+    search_mode = true
+    search_query = ""
+    current_scroll_idx = 1
+    draw_menu()
+
+    mp.add_forced_key_binding("any_unicode", "cheatsheet-search-input", handle_search_input, { complex = true })
+end
+
+-- Toggle
+local toggle_menu -- forward declaration
+
+local function toggle()
     active = not active
     if active then
         local success, err = xpcall(refresh_bindings, debug.traceback)
@@ -278,20 +345,49 @@ function toggle_menu()
             active = false
             return
         end
-        
+
+        -- Reset state
+        current_cat_idx = 1
+        current_scroll_idx = 1
+        search_mode = false
+        search_query = ""
+
         for _, bind in ipairs(key_bindings) do
             local flags = bind.repeatable and "repeatable" or ""
             mp.add_forced_key_binding(bind.key, bind.name, bind.fn, flags)
         end
-        
+
         draw_menu()
     else
+        -- Clean up search binding if active
+        mp.remove_key_binding("cheatsheet-search-input")
+
         for _, bind in ipairs(key_bindings) do
             mp.remove_key_binding(bind.name)
         end
-        
+
         overlay:remove()
     end
 end
+
+toggle_menu = toggle
+
+-- Key bindings config
+key_bindings = {
+    { key = "ESC", name = "cheatsheet-close", fn = toggle },
+    { key = "q", name = "cheatsheet-quit", fn = toggle },
+    { key = "j", name = "cheatsheet-down", fn = scroll_down, repeatable = true },
+    { key = "DOWN", name = "cheatsheet-down-arrow", fn = scroll_down, repeatable = true },
+    { key = "k", name = "cheatsheet-up", fn = scroll_up, repeatable = true },
+    { key = "UP", name = "cheatsheet-up-arrow", fn = scroll_up, repeatable = true },
+    { key = "l", name = "cheatsheet-next", fn = next_section, repeatable = true },
+    { key = "RIGHT", name = "cheatsheet-next-arrow", fn = next_section, repeatable = true },
+    { key = "h", name = "cheatsheet-prev", fn = prev_section, repeatable = true },
+    { key = "LEFT", name = "cheatsheet-prev-arrow", fn = prev_section, repeatable = true },
+    { key = "+", name = "cheatsheet-zoom-in", fn = increase_font_size, repeatable = true },
+    { key = "=", name = "cheatsheet-zoom-in-eq", fn = increase_font_size, repeatable = true },
+    { key = "-", name = "cheatsheet-zoom-out", fn = decrease_font_size, repeatable = true },
+    { key = "/", name = "cheatsheet-search", fn = start_search },
+}
 
 mp.add_key_binding(opts.activation_key, "display-cheatsheet", toggle_menu)
