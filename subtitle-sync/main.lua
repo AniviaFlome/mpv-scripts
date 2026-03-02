@@ -2,9 +2,9 @@ local mp = require("mp")
 local options = require("mp.options")
 
 local opts = {
-	key_mark_first = "Ctrl+1",
-	key_mark_second = "Ctrl+2",
-	key_calculate = "Ctrl+3",
+	key_mark_first = "Alt+1",
+	key_mark_second = "Alt+2",
+	key_calculate = "Alt+3",
 }
 
 options.read_options(opts, "subtitle-sync")
@@ -46,7 +46,7 @@ mp.add_key_binding(opts.key_mark_second, "mark_second_sub", function() mark_sub(
 
 mp.add_key_binding(opts.key_calculate, "calculate_difference", function()
 	if not first_ts or not second_ts then
-		notify("Mark both subtitles first with Ctrl+1 and Ctrl+2.")
+		notify(string.format("Mark both subtitles first with %s and %s.", opts.key_mark_first, opts.key_mark_second))
 		return
 	end
 

@@ -4,9 +4,9 @@ Get Precise values for comparing subtitle timings.
 
 ## Usage
 
-- `Ctrl+1` - Mark first subtitle start time
-- `Ctrl+2` - Mark second subtitle start time
-- `Ctrl+3` - Calculate difference
+- `Alt+1` - Mark first subtitle start time
+- `Alt+2` - Mark second subtitle start time
+- `Alt+3` - Calculate difference
 
 ## Options
 
