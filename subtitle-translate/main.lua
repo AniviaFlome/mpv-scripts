@@ -372,7 +372,8 @@ show_word_popup = function(word, mx, my)
 		else
 			lines = { { text = "(" .. tostring(err) .. ")", kind = "dim" } }
 		end
-		render.popup_set(lines, word, rect, mx, my)
+		local dictionary_name = source:sub(1, 1):upper() .. source:sub(2)
+		render.popup_set(lines, dictionary_name .. " — " .. word, rect, mx, my)
 	end)
 end
 

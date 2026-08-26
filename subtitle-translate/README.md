@@ -22,7 +22,7 @@ mpv script that translates subtitles on screen. Hover a word for a dictionary po
 | `key_show_translation` | `Ctrl+y` | Show translated text key (mode 2) |
 | `mode_on_start` | `off` | `off` / `dict` / `ondemand` / `always` |
 | `provider` | `mymemory` | `mymemory` / `google` / `lingva` / `libretranslate` / `deepl` |
-| `word_provider` | `cambridge` | Single word dictionary: `tureng` / `cambridge` / `wiktionary` / `reverso` |
+| `word_provider` | `cambridge` | `tureng` / `cambridge` / `wiktionary` / `reverso` |
 | `lang_from` / `lang_to` | `en` / `tr` | Language pair |
 | `position` | `top-center` | Panel anchor |
 | `panel_font_scale` | `0.85` | Panel text size |

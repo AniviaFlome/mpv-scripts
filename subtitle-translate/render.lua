@@ -334,6 +334,19 @@ local function render_popup_panel(display, header, anchor)
 		.. math.max(1, math.floor(opts.outline_width * h / 1080 + 0.5))
 		.. "\\shad0}"
 	local parts = {}
+	if header and header ~= "" then
+		parts[#parts + 1] = "{\\fs"
+			.. header_fs
+			.. "\\1c"
+			.. util.ass_color(opts.hovered_color)
+			.. "\\b1\\bord0}"
+			.. util.ass_escape(header)
+			.. "{\\fs"
+			.. fs
+			.. "\\b0\\bord"
+			.. math.max(1, math.floor(opts.outline_width * h / 1080 + 0.5))
+			.. "}"
+	end
 	for _, d in ipairs(display) do
 		if d.kind == "header" then
 			parts[#parts + 1] = "{\\fs"
