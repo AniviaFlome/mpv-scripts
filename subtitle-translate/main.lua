@@ -34,7 +34,7 @@ local opts = {
 	replica_outline = 3,
 	hovered_color = "ff5555",
 	dict_url_template = "https://tureng.com/en/turkish-english/{word}",
-	word_provider = "tureng",
+	word_provider = "cambridge",
 
 	mirror_font = "monospace",
 	mirror_font_size = 30,

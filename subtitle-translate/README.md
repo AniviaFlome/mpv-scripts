@@ -22,7 +22,7 @@ mpv script that translates subtitles on screen. Hover a word for a dictionary po
 | `key_show_translation` | `Ctrl+y` | Show translated text key (mode 2) |
 | `mode_on_start` | `off` | `off` / `dict` / `ondemand` / `always` |
 | `provider` | `mymemory` | `mymemory` / `google` / `lingva` / `libretranslate` / `deepl` |
-| `word_provider` | `tureng` | `tureng` / `cambridge` / `wiktionary` / `reverso` |
+| `word_provider` | `cambridge` | Single word dictionary: `tureng` / `cambridge` / `wiktionary` / `reverso` |
 | `lang_from` / `lang_to` | `en` / `tr` | Language pair |
 | `position` | `top-center` | Panel anchor |
 | `panel_font_scale` | `0.85` | Panel text size |
@@ -53,7 +53,7 @@ Provider-specific: `deepl_api_key`, `deepl_free`, `libretranslate_url`, `libretr
 provider=mymemory
 lang_from=en
 lang_to=tr
-word_provider=tureng
+word_provider=cambridge
 
 position=top-center
 panel_font_scale=0.85
