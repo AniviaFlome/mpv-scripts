@@ -41,8 +41,12 @@ local function mark_sub(which)
 	end
 end
 
-mp.add_key_binding(opts.key_mark_first, "mark_first_sub", function() mark_sub(1) end)
-mp.add_key_binding(opts.key_mark_second, "mark_second_sub", function() mark_sub(2) end)
+mp.add_key_binding(opts.key_mark_first, "mark_first_sub", function()
+	mark_sub(1)
+end)
+mp.add_key_binding(opts.key_mark_second, "mark_second_sub", function()
+	mark_sub(2)
+end)
 
 mp.add_key_binding(opts.key_calculate, "calculate_difference", function()
 	if not first_ts or not second_ts then
@@ -52,15 +56,14 @@ mp.add_key_binding(opts.key_calculate, "calculate_difference", function()
 
 	local diff = second_ts - first_ts
 
-	msg(
-		string.format(
-			"Subtitle difference:\n"
-				.. "First start:  %.3f sec\n"
-				.. "Second start: %.3f sec\n\n"
-				.. "Difference: %+.3f sec",
-			first_ts,
-			second_ts,
-			diff
-		)
+	local report = string.format(
+		"Subtitle difference:\n"
+			.. "First start:  %.3f sec\n"
+			.. "Second start: %.3f sec\n\n"
+			.. "Difference: %+.3f sec",
+		first_ts,
+		second_ts,
+		diff
 	)
+	notify(report)
 end)
