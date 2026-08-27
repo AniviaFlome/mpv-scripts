@@ -143,6 +143,23 @@ function M.get_panel_rect()
 	return panel_rect
 end
 
+local function get_xheight_bounds(text_content, font, fs, pos_an, x, y, w, h)
+	local probe_style = "{\\fn" .. font .. "\\fs" .. string.format("%.1f", fs) .. "\\bord0\\shad0}"
+	local probe_text = "x"
+	local probe_ov = mp.create_osd_overlay("ass-events")
+	probe_ov.hidden = true
+	probe_ov.compute_bounds = true
+	probe_ov.res_x = w
+	probe_ov.res_y = h
+	probe_ov.data = build_text_content(pos_an, x, y, probe_style .. util.ass_escape(probe_text))
+	local ok, rc = pcall(probe_ov.update, probe_ov)
+	probe_ov:remove()
+	if ok and rc and rc.x0 and rc.y0 and rc.x1 and rc.y1 then
+		return rc
+	end
+	return nil
+end
+
 local function render_line_translation(translated, error_text)
 	local w, h = mp.get_osd_size()
 	if not w or not h or w <= 0 or h <= 0 then
@@ -197,10 +214,26 @@ local function render_line_translation(translated, error_text)
 
 	local bg_data = ""
 	if ok_rc and rc and rc.x0 and rc.y0 and rc.x1 and rc.y1 then
+		local xh_rc = get_xheight_bounds(content, sub_font, fs, pos.an, x, y, w, h)
+		local pad_top, pad_bottom
+		if xh_rc and xh_rc.y0 and xh_rc.y1 then
+			local full_h = rc.y1 - rc.y0
+			local xh_top = xh_rc.y0 - rc.y0
+			local xh_bottom = rc.y1 - xh_rc.y1
+			local visual_center_offset = (xh_bottom - xh_top) / 2
+			local base_pad = pad
+			pad_top = math.floor(base_pad - visual_center_offset)
+			pad_bottom = math.floor(base_pad + visual_center_offset)
+			if pad_top < math.floor(fs * 0.1) then pad_top = math.floor(fs * 0.1) end
+			if pad_bottom < math.floor(fs * 0.1) then pad_bottom = math.floor(fs * 0.1) end
+		else
+			pad_top = pad
+			pad_bottom = pad
+		end
 		local bx = math.floor(rc.x0 - pad)
-		local by = math.floor(rc.y0 - pad)
+		local by = math.floor(rc.y0 - pad_top)
 		local bw = math.ceil(rc.x1 - rc.x0 + 2 * pad)
-		local bh = math.ceil(rc.y1 - rc.y0 + 2 * pad)
+		local bh = math.ceil(rc.y1 - rc.y0 + pad_top + pad_bottom)
 		panel_rect = { x = bx, y = by, w = bw, h = bh }
 		if opts.translation_background then
 			bg_data = build_bg_content(
