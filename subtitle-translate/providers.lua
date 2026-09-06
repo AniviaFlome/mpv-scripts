@@ -20,7 +20,7 @@ function M.cancel_requests() end
 local function http_request(def, cb)
 	req_seq = req_seq + 1
 	local seq = req_seq
-	local args = { "curl", "-sS", "--compressed", "--max-time", "10", "-A", def.ua or NEUTRAL_UA }
+	local args = { "curl", "-sS", "-L", "--compressed", "--max-time", "10", "-A", def.ua or NEUTRAL_UA }
 	if def.headers then
 		for _, header in ipairs(def.headers) do
 			args[#args + 1] = "-H"
@@ -28,7 +28,8 @@ local function http_request(def, cb)
 		end
 	end
 	if def.body then
-		args[#args + 1] = "--data-binary"
+		-- --data-raw: body starting with @ stays literal
+		args[#args + 1] = "--data-raw"
 		args[#args + 1] = def.body
 	end
 	args[#args + 1] = def.url
@@ -43,7 +44,20 @@ local function http_request(def, cb)
 		playback_only = false,
 	}, function(success, result, err)
 		if not success or not result or result.status ~= 0 then
-			local detail = err
+			local killed = type(result) == "table" and type(result.status) == "number" and result.status < 0
+			if killed and not def._retried then
+				-- killed by signal: retry once
+				if opts.verbose then
+					util.log("request [" .. seq .. "] killed, retrying")
+				end
+				def._retried = true
+				mp.add_timeout(1.5, function()
+					http_request(def, cb)
+				end)
+				return
+			end
+			local detail = killed and "curl process killed (possible system memory pressure)"
+				or err
 				or (result and result.stderr and util.trim(result.stderr))
 				or (result and result.status and ("curl exited with status " .. tostring(result.status)))
 				or "request failed"
@@ -57,6 +71,9 @@ end
 local providers = {}
 
 local function parse_google(body)
+	if type(body) == "string" and body:match("^%s*<") then
+		return nil, "google blocked this request (bot check) — set provider=mymemory"
+	end
 	local data = utils.parse_json(body)
 	if not data then
 		return nil, "invalid response from google"
@@ -268,7 +285,8 @@ providers.deepl = {
 			cb(nil, "deepl needs a free API key (deepl.com/pro-api) — set deepl_api_key")
 			return
 		end
-		local host = opts.deepl_free and "https://api-free.deepl.com" or "https://api.deepl.com"
+		-- free keys end with ":fx"
+		local host = opts.deepl_api_key:sub(-3) == ":fx" and "https://api-free.deepl.com" or "https://api.deepl.com"
 		local body = '{"text":[' .. json_quote(text) .. '],"target_lang":"' .. opts.lang_to:upper() .. '"'
 		if opts.lang_from ~= "" and opts.lang_from ~= "auto" then
 			body = body .. ',"source_lang":"' .. opts.lang_from:upper() .. '"'
@@ -289,6 +307,104 @@ providers.deepl = {
 			end
 			cb(parse_deepl(resp))
 		end)
+	end,
+}
+
+local ddg_vqd = nil
+
+local function parse_ddg_vqd(body)
+	if type(body) ~= "string" then
+		return nil
+	end
+	return body:match('vqd="([0-9a-f-]+)"') or body:match("vqd='([0-9a-f-]+)'")
+end
+
+local function parse_duckduckgo(body)
+	local data = utils.parse_json(body)
+	if type(data) ~= "table" then
+		return nil, "invalid response from duckduckgo"
+	end
+	if data.error then
+		return nil, "duckduckgo: " .. tostring(data.error)
+	end
+	if type(data.translated) ~= "string" or data.translated == "" then
+		return nil, "duckduckgo returned no translation"
+	end
+	return data.translated
+end
+
+local function ddg_fetch_vqd(cb)
+	http_request({
+		url = "https://duckduckgo.com",
+		method_label = "POST duckduckgo vqd",
+		ua = BROWSER_UA,
+		headers = { "Content-Type: application/x-www-form-urlencoded" },
+		body = "q=translate",
+	}, function(resp, err)
+		if not resp then
+			cb(nil, err)
+			return
+		end
+		local vqd = parse_ddg_vqd(resp)
+		if not vqd then
+			cb(nil, "duckduckgo returned no vqd token")
+			return
+		end
+		ddg_vqd = vqd
+		cb(vqd)
+	end)
+end
+
+providers.duckduckgo = {
+	sentence = function(text, cb)
+		local function attempt(vqd, retried)
+			local url = "https://duckduckgo.com/translation.js?vqd=" .. util.url_encode(vqd) .. "&query=translate"
+			if opts.lang_from ~= "" and opts.lang_from ~= "auto" then
+				url = url .. "&from=" .. util.url_encode(opts.lang_from)
+			end
+			url = url .. "&to=" .. util.url_encode(opts.lang_to)
+			http_request({
+				url = url,
+				method_label = "POST duckduckgo",
+				ua = BROWSER_UA,
+				body = text,
+			}, function(resp, err)
+				if not resp then
+					cb(nil, err)
+					return
+				end
+				local res, perr = parse_duckduckgo(resp)
+				if res or retried then
+					cb(res, perr or err)
+					return
+				end
+				-- Forbidden is edge rejection: fail fast
+				if perr and perr:find("Forbidden", 1, true) then
+					cb(nil, perr)
+					return
+				end
+				-- stale vqd: refetch once, retry
+				ddg_vqd = nil
+				ddg_fetch_vqd(function(fresh, ferr)
+					if not fresh then
+						cb(nil, ferr)
+						return
+					end
+					attempt(fresh, true)
+				end)
+			end)
+		end
+		if ddg_vqd then
+			attempt(ddg_vqd, false)
+		else
+			ddg_fetch_vqd(function(vqd, err)
+				if not vqd then
+					cb(nil, err)
+					return
+				end
+				attempt(vqd, false)
+			end)
+		end
 	end,
 }
 
@@ -391,7 +507,99 @@ function M.lookup_word(word, cb)
 		cb(nil, nil, "word_provider must name exactly one dictionary")
 		return
 	end
+	word = util.trim(word or ""):gsub("%s+", " ")
+	if word == "" then
+		cb(nil, nil, "nothing to look up")
+		return
+	end
 	lookup_word_via(source, word, cb)
+end
+
+local function parse_cambridge_suggest(body)
+	local data = utils.parse_json(body)
+	if type(data) ~= "table" then
+		return nil
+	end
+	local out = {}
+	for _, item in ipairs(data) do
+		if type(item) == "table" and type(item.word) == "string" and item.word ~= "" then
+			out[#out + 1] = item.word
+		end
+		if #out >= 15 then
+			break
+		end
+	end
+	if #out == 0 then
+		return nil
+	end
+	return out
+end
+
+local function parse_wiktionary_suggest(body)
+	local data = utils.parse_json(body)
+	if type(data) ~= "table" or type(data[2]) ~= "table" then
+		return nil
+	end
+	local out = {}
+	for _, w in ipairs(data[2]) do
+		if type(w) == "string" and w ~= "" then
+			out[#out + 1] = w
+		end
+		if #out >= 15 then
+			break
+		end
+	end
+	if #out == 0 then
+		return nil
+	end
+	return out
+end
+
+local function cambridge_suggest(prefix, cb)
+	local dir = (opts.lang_from == "tr") and "turkish-english" or "english-turkish"
+	http_request({
+		url = "https://dictionary.cambridge.org/autocomplete/amp?dataset=" .. dir .. "&q=" .. util.url_encode(prefix),
+		method_label = "cambridge suggest",
+		ua = BROWSER_UA,
+	}, function(resp, err)
+		if not resp then
+			cb(nil, err)
+			return
+		end
+		cb(parse_cambridge_suggest(resp))
+	end)
+end
+
+local function wiktionary_suggest(prefix, cb)
+	http_request({
+		url = "https://en.wiktionary.org/w/api.php?action=opensearch&search="
+			.. util.url_encode(prefix)
+			.. "&limit=15&namespace=0&format=json",
+		method_label = "wiktionary suggest",
+	}, function(resp, err)
+		if not resp then
+			cb(nil, err)
+			return
+		end
+		cb(parse_wiktionary_suggest(resp))
+	end)
+end
+
+-- nil = no suggestions, direct lookup
+function M.suggest(prefix, cb)
+	local source = util.trim(opts.word_provider or "")
+	prefix = util.trim(prefix or ""):gsub("%s+", " ")
+	if prefix == "" then
+		cb({})
+		return
+	end
+	if source == "cambridge" then
+		cambridge_suggest(prefix, cb)
+	elseif source == "wiktionary" then
+		wiktionary_suggest(prefix, cb)
+	else
+		cb(nil)
+	end
 end
 
 function M.lookup(kind, text, cb)
@@ -415,7 +623,7 @@ function M.lookup(kind, text, cb)
 		provider.sentence(text, function(res, err)
 			if res then
 				res = { main = res }
-				cache.store(key, res)
+				cache.store(key, res, false)
 				cb(res)
 			else
 				cb(nil, err)
@@ -426,7 +634,7 @@ function M.lookup(kind, text, cb)
 	local fn = kind == "word" and provider.word or provider.sentence
 	fn(text, function(res, err)
 		if res then
-			cache.store(key, res)
+			cache.store(key, res, kind == "sentence")
 			cb(res)
 		else
 			cb(nil, err)
@@ -440,11 +648,14 @@ M.parse = {
 	mymemory = parse_mymemory,
 	libretranslate = parse_libretranslate,
 	deepl = parse_deepl,
+	duckduckgo = parse_duckduckgo,
+	duckduckgo_vqd = parse_ddg_vqd,
+	cambridge_suggest = parse_cambridge_suggest,
+	wiktionary_suggest = parse_wiktionary_suggest,
 	tureng = parse_tureng,
 }
 
--- word backends: cambridge / wiktionary / reverso -----------------------------
-
+-- word backends
 local CAMBRIDGE_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0"
 
 local function strip_ws(s)

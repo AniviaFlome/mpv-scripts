@@ -8,10 +8,17 @@ local providers = require("providers")
 local layout = require("layout")
 local render = require("render")
 local timeline = require("timeline")
+local menu = require("menu")
+local search = require("search")
+local translate = require("translate")
 
 local opts = {
 	key_cycle_mode = "Alt+t",
 	key_show_translation = "Ctrl+y",
+	key_settings_menu = "Alt+T",
+	key_dict_box = "Alt+d",
+	key_translate_box = "Alt+D",
+	key_search_word = "",
 	mode_on_start = "off",
 	provider = "mymemory",
 	lang_from = "en",
@@ -26,7 +33,6 @@ local opts = {
 	color_bg = "101010",
 	bg_opacity = 55,
 	max_width_percent = 80,
-	translation_background = false,
 	panel_font_scale = 0.85,
 
 	hover_backend = "replica",
@@ -50,13 +56,17 @@ local opts = {
 	popup_padding_y = 0.12,
 	timeout = 10,
 	prefetch = true,
-	prefetch_all = true,
-	prefetch_concurrency = 4,
+	prefetch_all = false,
+	prefetch_concurrency = 2,
 	prefetch_ahead = 20,
+	disk_cache = true,
+	cache_dir = "",
+	cache_max_entries = 5000,
 	verbose = false,
 	show_hitboxes = false,
 
 	deepl_api_key = "",
+	-- deprecated (ignored): host is auto-detected from key suffix
 	deepl_free = true,
 	libretranslate_url = "https://libretranslate.com",
 	libretranslate_api_key = "",
@@ -65,6 +75,11 @@ local opts = {
 }
 
 options.read_options(opts, "subtitle-translate")
+
+-- deprecated alias: key_search_word -> key_dict_box
+if opts.key_search_word ~= "" and opts.key_dict_box == "Alt+d" then
+	opts.key_dict_box = opts.key_search_word
+end
 
 cache.init(opts)
 providers.init(opts)
@@ -108,6 +123,9 @@ local hover = {
 
 local saved_sub_props = nil
 
+-- generic backend error text
+local BACKEND_ERROR = "translation backend not working"
+
 local function log(text)
 	util.log(text)
 end
@@ -125,6 +143,68 @@ local function current_sub()
 		return nil
 	end
 	return text
+end
+
+local search_history = {}
+local SEARCH_HISTORY_MAX = 50
+
+local function record_search(word)
+	if not word or word == "" then
+		return
+	end
+	for i, w in ipairs(search_history) do
+		if w == word then
+			table.remove(search_history, i)
+			break
+		end
+	end
+	table.insert(search_history, 1, word)
+	while #search_history > SEARCH_HISTORY_MAX do
+		search_history[#search_history] = nil
+	end
+end
+
+-- keep ASS codes as word separators
+local function sub_tokens()
+	local raw = current_sub()
+	if not raw then
+		return {}
+	end
+	raw = raw:gsub("%b{}", " ")
+	raw = raw:gsub("\\[Nnh]", " ")
+	raw = util.strip_tags(raw)
+	local out = {}
+	for token in raw:gmatch("%S+") do
+		local w = layout.clean_word(token)
+		if w then
+			out[#out + 1] = w
+		end
+	end
+	return out
+end
+
+local function subtitle_words()
+	local out, seen = {}, {}
+	for _, w in ipairs(sub_tokens()) do
+		if not seen[w] then
+			seen[w] = true
+			out[#out + 1] = w
+		end
+	end
+	return out
+end
+
+local function subtitle_phrases()
+	local tokens = sub_tokens()
+	local out, seen = {}, {}
+	for i = 1, #tokens - 1 do
+		local phrase = tokens[i] .. " " .. tokens[i + 1]
+		if not seen[phrase] then
+			seen[phrase] = true
+			out[#out + 1] = phrase
+		end
+	end
+	return out
 end
 
 local function get_replica_style()
@@ -214,8 +294,10 @@ local function ensure_hover_layout()
 	local style
 	hover.sub = raw
 	hover.idx = nil
+	-- strip ASS codes to avoid fake words
+	local plain = util.clean_subtitle_text(raw)
 	if opts.hover_backend == "mirror" then
-		hover.layout = layout.build_mirror_layout(raw, w, h)
+		hover.layout = layout.build_mirror_layout(plain, w, h)
 	elseif opts.hover_backend == "replica" then
 		style = get_replica_style(saved_sub_props)
 		local fs = style.fontsize * (h / 720)
@@ -230,7 +312,7 @@ local function ensure_hover_layout()
 				return layout.probe_text(t, style, w, h, fs)
 			end,
 		}
-		hover.layout = layout.build_native_layout(raw, w, h, style, meas)
+		hover.layout = layout.build_native_layout(plain, w, h, style, meas)
 	else
 		style = timeline.get_native_style()
 		local scale = (style.playres_y or 288) > 0 and (h / style.playres_y) or 1
@@ -246,7 +328,7 @@ local function ensure_hover_layout()
 				return layout.probe_text(t, style, w, h, fs)
 			end,
 		}
-		hover.layout = layout.build_native_layout(raw, w, h, style, meas)
+		hover.layout = layout.build_native_layout(plain, w, h, style, meas)
 	end
 	hover.layout.style = style
 	hover.osd_w = w
@@ -289,8 +371,16 @@ local function region_contains_mouse(layout, mx, my)
 end
 
 local show_word_popup
+local present_lookup
+local trbox = nil
+local open_search_menu
+local open_search_box
+local open_translate_box
 
 local function tick_hover()
+	if trbox then
+		return
+	end
 	local had_ui = hover.layout ~= nil or hover.idx ~= nil
 	local lay = ensure_hover_layout()
 	if not lay then
@@ -336,6 +426,9 @@ local function tick_hover()
 		elseif opts.hover_backend == "replica" then
 			render.render_replica_line(lay, idx)
 		end
+		if search.is_pinned() then
+			return
+		end
 		local word = layout.clean_word(lay.words[idx].text)
 		if word then
 			show_word_popup(word, mouse.x, mouse.y)
@@ -343,7 +436,9 @@ local function tick_hover()
 			render.clear_popup()
 		end
 	else
-		render.clear_popup()
+		if not search.is_pinned() then
+			render.clear_popup()
+		end
 		if opts.hover_backend == "mirror" then
 			render.render_mirror_line(lay, nil)
 		elseif opts.hover_backend == "replica" then
@@ -361,20 +456,209 @@ show_word_popup = function(word, mx, my)
 	hover.seq = hover.seq + 1
 	local seq = hover.seq
 	render.clear_popup()
+	record_search(word)
 
 	providers.lookup_word(word, function(source, res, err)
 		if seq ~= hover.seq or hover.idx == nil or not source then
 			return
 		end
-		local lines
-		if res then
-			lines = render.build_popup_lines(res)
-		else
-			lines = { { text = "(" .. tostring(err) .. ")", kind = "dim" } }
-		end
-		local dictionary_name = source:sub(1, 1):upper() .. source:sub(2)
-		render.popup_set(lines, dictionary_name .. " — " .. word, rect, mx, my)
+		present_lookup(source, res, err, word, rect, mx, my)
 	end)
+end
+
+present_lookup = function(source, res, err, word, rect, mx, my, fixed)
+	local lines
+	if res then
+		lines = render.build_popup_lines(res)
+	else
+		if opts.verbose then
+			log("lookup failed: " .. tostring(err))
+		end
+		lines = { { text = "(" .. BACKEND_ERROR .. ")", kind = "dim" } }
+	end
+	local dictionary_name = source:sub(1, 1):upper() .. source:sub(2)
+	local header = dictionary_name .. " — " .. word
+	if fixed then
+		render.popup_set_fixed(lines, header)
+	else
+		render.popup_set(lines, header, rect, mx, my)
+	end
+end
+
+local search_seq = 0
+
+local function lookup_searched_word(text)
+	local word = layout.clean_word(text)
+	if not word then
+		notify("nothing to look up")
+		return
+	end
+	search_seq = search_seq + 1
+	local seq = search_seq
+	record_search(word)
+	providers.lookup_word(word, function(source, res, err)
+		if seq ~= search_seq or not source then
+			return
+		end
+		present_lookup(source, res, err, word, nil, 0, 0, true)
+	end)
+end
+
+local trbox_seq = 0
+local preview_seq = 0
+local translate_history = {}
+local TRANSLATE_HISTORY_MAX = 50
+
+local function clear_trbox_ui()
+	trbox = nil
+	trbox_seq = trbox_seq + 1
+	preview_seq = preview_seq + 1
+	render.hide_line_translation()
+	hover.sub = nil
+	hover.layout = nil
+	hover.idx = nil
+end
+
+local function record_translate(text)
+	if not text or text == "" then
+		return
+	end
+	for i, w in ipairs(translate_history) do
+		if w == text then
+			table.remove(translate_history, i)
+			break
+		end
+	end
+	table.insert(translate_history, 1, text)
+	while #translate_history > TRANSLATE_HISTORY_MAX do
+		translate_history[#translate_history] = nil
+	end
+end
+
+local function paused_error()
+	return "translation paused (quota:" .. opts.provider .. ") — retry in ~" .. timeline.quota_eta_min() .. " min"
+end
+
+local function lookup_sentence_box(text)
+	text = util.trim(text or ""):gsub("%s+", " ")
+	if text == "" then
+		notify("nothing to translate")
+		return
+	end
+	if timeline.quota_active() then
+		trbox = { input = text, translated = nil, error = paused_error() }
+		render.show_line_translation(nil, trbox.error)
+		return
+	end
+	trbox_seq = trbox_seq + 1
+	local seq = trbox_seq
+	record_translate(text)
+	providers.lookup("sentence", text, function(res, err)
+		if seq ~= trbox_seq or not translate.is_pinned() then
+			return
+		end
+		if err then
+			timeline.report_quota(err)
+		end
+		hover.seq = hover.seq + 1
+		render.clear_popup()
+		if err then
+			if opts.verbose then
+				log("lookup failed: " .. tostring(err))
+			end
+			err = BACKEND_ERROR
+		end
+		local translated = type(res) == "string" and res or (type(res) == "table" and res.main)
+		trbox = { input = text, translated = translated, error = err }
+		render.show_line_translation(translated, err)
+	end)
+end
+
+-- provisional preview, not pinned
+local function preview_sentence(text)
+	text = util.trim(text or ""):gsub("%s+", " ")
+	if text == "" or timeline.quota_active() then
+		return
+	end
+	preview_seq = preview_seq + 1
+	local seq = preview_seq
+	providers.lookup("sentence", text, function(res, err)
+		if seq ~= preview_seq or translate.is_pinned() then
+			return
+		end
+		if err then
+			if opts.verbose then
+				log("preview failed: " .. tostring(err))
+			end
+			return
+		end
+		local translated = type(res) == "string" and res or (type(res) == "table" and res.main)
+		if not translated then
+			return
+		end
+		hover.seq = hover.seq + 1
+		render.clear_popup()
+		trbox = { input = text, translated = translated, error = nil, provisional = true }
+		render.show_line_translation(translated, nil)
+	end)
+end
+
+-- clear provisional, keep pinned
+local function clear_provisional()
+	preview_seq = preview_seq + 1
+	if trbox and not translate.is_pinned() then
+		clear_trbox_ui()
+	end
+end
+
+-- pinned popups dismiss on ESC/Enter/click
+local dismiss_armed = false
+local DISMISS_BINDINGS = {
+	"st_dismiss_esc",
+	"st_dismiss_enter",
+	"st_dismiss_kpenter",
+	"st_dismiss_mleft",
+	"st_dismiss_mmid",
+	"st_dismiss_mright",
+}
+
+local function dismiss_deactivate()
+	if not dismiss_armed then
+		return
+	end
+	dismiss_armed = false
+	for _, name in ipairs(DISMISS_BINDINGS) do
+		pcall(function()
+			mp.remove_key_binding(name)
+		end)
+	end
+end
+
+local function dismiss_popup()
+	render.clear_popup()
+	if trbox then
+		clear_trbox_ui()
+	end
+	search.disarm()
+	translate.disarm()
+	dismiss_deactivate()
+end
+
+local function sync_dismiss()
+	local want = search.is_pinned() or translate.is_pinned()
+	if want and not dismiss_armed then
+		dismiss_armed = true
+		mp.add_key_binding("ESC", "st_dismiss_esc", dismiss_popup)
+		mp.add_key_binding("ENTER", "st_dismiss_enter", dismiss_popup)
+		mp.add_key_binding("KP_ENTER", "st_dismiss_kpenter", dismiss_popup)
+		if state ~= "dict" then
+			mp.add_key_binding("MBTN_LEFT", "st_dismiss_mleft", dismiss_popup)
+		end
+		mp.add_key_binding("MBTN_MID", "st_dismiss_mmid", dismiss_popup)
+		mp.add_key_binding("MBTN_RIGHT", "st_dismiss_mright", dismiss_popup)
+	elseif not want and dismiss_armed then
+		dismiss_deactivate()
+	end
 end
 
 local function word_click()
@@ -412,7 +696,7 @@ end
 
 local function dict_bindings_deactivate()
 	pcall(function()
-		mp.remove_key_binding("st_wheel_up")
+		mp.remove_key_binding("st_word_click")
 	end)
 	pcall(function()
 		mp.remove_key_binding("st_wheel_down")
@@ -456,6 +740,9 @@ local function panel_should_show(text)
 end
 
 local function render_panel()
+	if trbox then
+		return
+	end
 	local text = line_ui.text
 	local show = text ~= nil and panel_should_show(text) and (line_ui.translated ~= nil or line_ui.error ~= nil)
 	local key = show and (text .. "|" .. tostring(line_ui.translated) .. "|" .. tostring(line_ui.error)) or nil
@@ -483,7 +770,10 @@ end
 
 local function apply_line_result(res, err)
 	if err then
-		line_ui.error = err
+		if opts.verbose then
+			log("lookup failed: " .. tostring(err))
+		end
+		line_ui.error = BACKEND_ERROR
 		return
 	end
 	local translated = nil
@@ -508,14 +798,23 @@ local function update_line_translation()
 		return
 	end
 	local display = util.trim(raw)
-	local text = util.normalize_sub(raw)
+	-- strip ASS codes for translator/cache
+	local text = util.normalize_sub(util.clean_subtitle_text(raw))
 	if line_ui.text == text and (line_ui.pending or line_ui.translated ~= nil or line_ui.error ~= nil) then
+		-- same line: skip fetch, recheck visibility
+		render_panel()
 		return
 	end
 	line_ui.text = text
 	line_ui.display = display
 	line_ui.translated = nil
 	line_ui.error = nil
+	if timeline.quota_active() then
+		line_ui.pending = false
+		line_ui.error = paused_error()
+		render_panel()
+		return
+	end
 	line_ui.pending = true
 	line_ui.seq = line_ui.seq + 1
 	local seq = line_ui.seq
@@ -524,6 +823,9 @@ local function update_line_translation()
 			return
 		end
 		line_ui.pending = false
+		if err then
+			timeline.report_quota(err)
+		end
 		apply_line_result(res, err)
 		render_panel()
 	end)
@@ -541,11 +843,13 @@ local function on_sub_change_inner(_name, text)
 	hover.sub = nil
 	hover.layout = nil
 	hover.idx = nil
-	render.clear_popup()
+	if not search.is_pinned() then
+		render.clear_popup()
+	end
 	if state == "always" or state == "ondemand" then
 		line_ui.pinned_line = nil
 		update_line_translation()
-	elseif state == "dict" then
+	elseif state == "dict" and not trbox then
 		if not text or text == "" then
 			render.remove_line()
 		elseif opts.hover_backend == "replica" or opts.hover_backend == "mirror" then
@@ -584,6 +888,10 @@ local function apply_state(new_state, quiet)
 	hover.layout = nil
 	hover.idx = nil
 	hover.seq = hover.seq + 1
+	search.disarm()
+	translate.disarm()
+	trbox = nil
+	dismiss_deactivate()
 	render.remove_line()
 	render.clear_popup()
 	render.remove_debug()
@@ -628,7 +936,7 @@ local function manual_show()
 		return
 	end
 	if state == "ondemand" then
-		line_ui.pinned_line = util.normalize_sub(raw)
+		line_ui.pinned_line = util.normalize_sub(util.clean_subtitle_text(raw))
 		update_line_translation()
 		render_panel()
 	end
@@ -651,6 +959,106 @@ mp.register_script_message("show-translation", manual_show)
 
 mp.add_key_binding(opts.key_cycle_mode, "cycle_mode", cycle_mode)
 mp.add_key_binding(opts.key_show_translation, "show_translation", manual_show)
+
+menu.init(opts, {
+	notify = notify,
+	retranslate = function()
+		providers.cancel_requests()
+		line_ui.seq = line_ui.seq + 1
+		line_ui.text = nil
+		line_ui.translated = nil
+		line_ui.error = nil
+		line_ui.pending = false
+		if state == "always" or state == "ondemand" then
+			update_line_translation()
+		end
+	end,
+	refresh_panel = function()
+		render_panel()
+	end,
+	rebuild_hover = function()
+		hover.sub = nil
+		hover.layout = nil
+		hover.idx = nil
+		hover.seq = hover.seq + 1
+		search.disarm()
+		translate.disarm()
+		dismiss_deactivate()
+		render.clear_popup()
+		if state == "dict" and opts.hover_backend == "replica" then
+			replica_activate()
+		else
+			replica_deactivate()
+		end
+	end,
+})
+mp.add_key_binding(opts.key_settings_menu, "open_settings", open_search_menu)
+
+search.init(opts, {
+	notify = notify,
+	lookup = function(word)
+		translate.disarm()
+		if trbox then
+			clear_trbox_ui()
+		end
+		lookup_searched_word(word)
+	end,
+	suggest = function(prefix, cb)
+		providers.suggest(prefix, cb)
+	end,
+	close_popup = render.clear_popup,
+	pin_changed = sync_dismiss,
+	subtitle_words = subtitle_words,
+	subtitle_phrases = subtitle_phrases,
+	history_words = function()
+		return search_history
+	end,
+})
+mp.add_key_binding(opts.key_dict_box, "open_search", open_search_box)
+
+translate.init(opts, {
+	notify = notify,
+	lookup = function(text)
+		search.disarm()
+		render.clear_popup()
+		lookup_sentence_box(text)
+	end,
+	preview = preview_sentence,
+	clear_result = clear_provisional,
+	close_popup = function()
+		if trbox then
+			clear_trbox_ui()
+		end
+	end,
+	pin_changed = sync_dismiss,
+	translate_history = function()
+		return translate_history
+	end,
+})
+
+open_search_menu = function()
+	search.close()
+	menu.open()
+end
+
+open_search_box = function()
+	menu.close()
+	translate.close()
+	search.open()
+end
+
+open_translate_box = function()
+	menu.close()
+	search.close()
+	translate.open()
+end
+
+mp.add_key_binding(opts.key_settings_menu, "open_settings", open_search_menu)
+mp.add_key_binding(opts.key_dict_box, "open_search", open_search_box)
+mp.add_key_binding(opts.key_translate_box, "open_translate", open_translate_box)
+mp.register_script_message("open-settings", open_search_menu)
+mp.register_script_message("open-search", open_search_box)
+mp.register_script_message("open-translate", open_translate_box)
 
 if not set_mode_from_name(opts.mode_on_start, true) then
 	state = "off"
@@ -688,9 +1096,13 @@ mp.add_periodic_timer(0.05, on_tick)
 mp.add_periodic_timer(15, function()
 	mp.add_key_binding(opts.key_cycle_mode, "cycle_mode", cycle_mode)
 	mp.add_key_binding(opts.key_show_translation, "show_translation", manual_show)
+	mp.add_key_binding(opts.key_settings_menu, "open_settings", open_search_menu)
+	mp.add_key_binding(opts.key_dict_box, "open_search", open_search_box)
+	mp.add_key_binding(opts.key_translate_box, "open_translate", open_translate_box)
 end)
 mp.register_event("shutdown", function()
 	providers.cancel_requests()
+	cache.save_now()
 	timeline.reset()
 	dict_bindings_deactivate()
 	replica_deactivate()
@@ -714,6 +1126,12 @@ log(
 		.. opts.key_cycle_mode
 		.. " show="
 		.. opts.key_show_translation
+		.. " settings="
+		.. opts.key_settings_menu
+		.. " dict="
+		.. opts.key_dict_box
+		.. " translate="
+		.. opts.key_translate_box
 		.. ")"
 )
 

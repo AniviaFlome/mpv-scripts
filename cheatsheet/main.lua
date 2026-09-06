@@ -1,6 +1,4 @@
--- mpv-cheatsheet
--- dynamically displays active keybindings in an OSD overlay
--- features: single-category view, section navigation, live search
+-- cheatsheet: keybinding overlay
 
 local mp = require 'mp'
 local msg = require 'mp.msg'
@@ -16,18 +14,15 @@ local opts = {
 local active = false
 local overlay = mp.create_osd_overlay("ass-events")
 
--- Data: populated by refresh_bindings
-local sorted_cats = {}   -- ordered category names
-local grouped = {}        -- cat_name -> list of {key, cmd, comment}
-local max_key_lens = {}   -- cat_name -> max key string length
+local sorted_cats = {}
+local grouped = {}
+local max_key_lens = {}
 
--- View state
 local current_cat_idx = 1
 local current_scroll_idx = 1
 local search_query = ""
 local search_mode = false
 
--- Usage hints
 local usage = {
     "ESC / ? : close",
     "j / DOWN : scroll down",
@@ -38,7 +33,6 @@ local usage = {
     "/ : search",
 }
 
--- Category definitions with patterns
 local categories = {
     { name = "Scripts", patterns = { "script", "^script_" } },
     { name = "Navigation", patterns = { "seek" } },
@@ -76,7 +70,7 @@ local function refresh_bindings()
             local comment = bind.comment or bind.cmd
             local cat = detect_category(bind.cmd, comment)
 
-            -- Strip noisy command prefixes from display text
+            -- strip OSD prefixes
             comment = comment
                 :gsub("^no%-osd ", "")
                 :gsub("^nonscalable ", "")
@@ -100,7 +94,6 @@ local function refresh_bindings()
         end
     end
 
-    -- Custom sort order
     local sort_order = {
         ["General"] = 1, ["Navigation"] = 2, ["Audio"] = 3,
         ["Video"] = 4, ["Subtitles"] = 5, ["Scripts"] = 6,
@@ -114,16 +107,14 @@ local function refresh_bindings()
         return a < b
     end)
 
-    -- Sort items within each category
     for _, cat in ipairs(sorted_cats) do
         table.sort(grouped[cat], function(a, b) return a.key < b.key end)
     end
 end
 
--- Get items to display based on current mode (category view or search)
+-- visible items for current mode
 local function get_visible_items()
     if search_mode and search_query ~= "" then
-        -- Search across all categories
         local results = {}
         local query = search_query:lower()
         local search_max_key_len = 0
@@ -142,7 +133,6 @@ local function get_visible_items()
         return results, "Search: " .. search_query, search_max_key_len
     end
 
-    -- Single category view
     if #sorted_cats == 0 then return {}, "No bindings", 10 end
 
     local cat = sorted_cats[current_cat_idx] or sorted_cats[1]
@@ -173,7 +163,6 @@ local function draw_menu()
 
         local items, title, mkl = get_visible_items()
 
-        -- Header: category name [idx/total] or search prompt
         local header
         if search_mode then
             header = title
@@ -181,9 +170,8 @@ local function draw_menu()
             header = string.format("%s  [%d/%d]", title, current_cat_idx, #sorted_cats)
         end
         table.insert(ass, "{\\b1}" .. header .. "{\\b0}\\N")
-        table.insert(ass, "\\N") -- blank line after header
+        table.insert(ass, "\\N")
 
-        -- Render items with scrolling
         local max_lines = 38
         local total = #items
         local start = current_scroll_idx
@@ -207,7 +195,6 @@ local function draw_menu()
             table.insert(ass, "(no results)\\N")
         end
 
-        -- Usage panel (top-right)
         local w, h = mp.get_osd_size()
         if w and h then
             local usage_style = string.format(
@@ -230,7 +217,6 @@ local function draw_menu()
     end
 end
 
--- Navigation
 local function scroll_down()
     local items = get_visible_items()
     if current_scroll_idx < #items then
@@ -276,7 +262,6 @@ local function decrease_font_size()
     end
 end
 
--- Search
 local function exit_search()
     search_mode = false
     search_query = ""
@@ -291,12 +276,10 @@ local function handle_search_input(event)
         local key = event.key_name
 
         if key == "ESC" or key == "ENTER" or key == "KP_ENTER" then
-            -- ESC exits search, ENTER "locks in" results (stays in search view)
+            -- ESC exits, ENTER keeps results
             if key == "ESC" then
                 exit_search()
             else
-                -- Keep results visible, exit search input mode
-                -- Remove text input, keep search_mode true to show results
                 mp.set_osd_ass(0, 0, "")
             end
             mp.remove_key_binding("cheatsheet-search-input")
@@ -311,12 +294,11 @@ local function handle_search_input(event)
                 return
             end
         elseif #key == 1 then
-            -- Single printable character
             search_query = search_query .. key
         elseif key == "SPACE" then
             search_query = search_query .. " "
         else
-            return -- ignore non-printable keys
+            return
         end
 
         current_scroll_idx = 1
@@ -333,7 +315,6 @@ local function start_search()
     mp.add_forced_key_binding("any_unicode", "cheatsheet-search-input", handle_search_input, { complex = true })
 end
 
--- Toggle
 local toggle_menu -- forward declaration
 
 local function toggle()
@@ -346,7 +327,6 @@ local function toggle()
             return
         end
 
-        -- Reset state
         current_cat_idx = 1
         current_scroll_idx = 1
         search_mode = false
@@ -359,7 +339,6 @@ local function toggle()
 
         draw_menu()
     else
-        -- Clean up search binding if active
         mp.remove_key_binding("cheatsheet-search-input")
 
         for _, bind in ipairs(key_bindings) do
@@ -372,7 +351,6 @@ end
 
 toggle_menu = toggle
 
--- Key bindings config
 key_bindings = {
     { key = "ESC", name = "cheatsheet-close", fn = toggle },
     { key = "q", name = "cheatsheet-quit", fn = toggle },

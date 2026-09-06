@@ -11,19 +11,6 @@ local debug_ov = nil
 local popup_paging = { lines = nil, offset = 0, header = nil, word = nil, mx = 0, my = 0 }
 local panel_rect = nil
 
-local POS_TR = {
-	noun = "isim",
-	verb = "fiil",
-	adjective = "sıfat",
-	adverb = "zarf",
-	preposition = "edat",
-	conjunction = "bağlaç",
-	pronoun = "zamir",
-	interjection = "ünlem",
-	numeral = "sayı",
-	exclamation = "ünlem",
-}
-
 function M.init(o)
 	opts = o
 	line_ov = mp.create_osd_overlay("ass-events")
@@ -46,8 +33,9 @@ function M.remove_debug()
 end
 
 local function build_bg_content(an, x, y, bw, bh, color, alpha, bord, bord_color)
+	-- floats keep padding even
 	return string.format(
-		"{\\an%d\\pos(%d,%d)\\bord%s\\shad0\\3c%s\\1c%s\\alpha%s\\p1}m 0 0 l %.0f 0 %.0f %.0f 0 %.0f{\\p0}",
+		"{\\an%d\\pos(%.2f,%.2f)\\bord%s\\shad0\\3c%s\\1c%s\\alpha%s\\p1}m 0 0 l %.2f 0 %.2f %.2f 0 %.2f{\\p0}",
 		an,
 		x,
 		y,
@@ -117,7 +105,7 @@ function M.build_popup_lines(res)
 			if gi > opts.dict_max_groups then
 				break
 			end
-			local label = POS_TR[group.pos] or group.pos
+			local label = group.pos
 			if label ~= "" then
 				lines_out[#lines_out + 1] = { text = label, kind = "group" }
 			end
@@ -141,23 +129,6 @@ end
 
 function M.get_panel_rect()
 	return panel_rect
-end
-
-local function get_xheight_bounds(text_content, font, fs, pos_an, x, y, w, h)
-	local probe_style = "{\\fn" .. font .. "\\fs" .. string.format("%.1f", fs) .. "\\bord0\\shad0}"
-	local probe_text = "x"
-	local probe_ov = mp.create_osd_overlay("ass-events")
-	probe_ov.hidden = true
-	probe_ov.compute_bounds = true
-	probe_ov.res_x = w
-	probe_ov.res_y = h
-	probe_ov.data = build_text_content(pos_an, x, y, probe_style .. util.ass_escape(probe_text))
-	local ok, rc = pcall(probe_ov.update, probe_ov)
-	probe_ov:remove()
-	if ok and rc and rc.x0 and rc.y0 and rc.x1 and rc.y1 then
-		return rc
-	end
-	return nil
 end
 
 local function render_line_translation(translated, error_text)
@@ -204,7 +175,7 @@ local function render_line_translation(translated, error_text)
 		content = content .. util.ass_escape(l)
 	end
 
-	local pad = math.floor(fs * 0.25)
+	-- hover zone for ondemand mode
 	line_ov.res_x = w
 	line_ov.res_y = h
 	line_ov.compute_bounds = true
@@ -212,45 +183,11 @@ local function render_line_translation(translated, error_text)
 	local ok_rc, rc = pcall(line_ov.update, line_ov)
 	line_ov.compute_bounds = false
 
-	local bg_data = ""
 	if ok_rc and rc and rc.x0 and rc.y0 and rc.x1 and rc.y1 then
-		local xh_rc = get_xheight_bounds(content, sub_font, fs, pos.an, x, y, w, h)
-		local pad_top, pad_bottom
-		if xh_rc and xh_rc.y0 and xh_rc.y1 then
-			local full_h = rc.y1 - rc.y0
-			local xh_top = xh_rc.y0 - rc.y0
-			local xh_bottom = rc.y1 - xh_rc.y1
-			local visual_center_offset = (xh_bottom - xh_top) / 2
-			local base_pad = pad
-			pad_top = math.floor(base_pad - visual_center_offset)
-			pad_bottom = math.floor(base_pad + visual_center_offset)
-			if pad_top < math.floor(fs * 0.1) then pad_top = math.floor(fs * 0.1) end
-			if pad_bottom < math.floor(fs * 0.1) then pad_bottom = math.floor(fs * 0.1) end
-		else
-			pad_top = pad
-			pad_bottom = pad
-		end
-		local bx = math.floor(rc.x0 - pad)
-		local by = math.floor(rc.y0 - pad_top)
-		local bw = math.ceil(rc.x1 - rc.x0 + 2 * pad)
-		local bh = math.ceil(rc.y1 - rc.y0 + pad_top + pad_bottom)
-		panel_rect = { x = bx, y = by, w = bw, h = bh }
-		if opts.translation_background then
-			bg_data = build_bg_content(
-				7,
-				bx,
-				by,
-				bw,
-				bh,
-				opts.color_bg,
-				util.ass_alpha(math.min(100, opts.bg_opacity + 15)),
-				math.max(1.5, math.floor(fs * 0.06)),
-				"5a5a5a"
-			)
-		end
+		panel_rect = { x = rc.x0, y = rc.y0, w = rc.x1 - rc.x0, h = rc.y1 - rc.y0 }
 	end
 	local text_data = build_text_content(pos.an, x, y, content)
-	line_ov.data = bg_data ~= "" and (bg_data .. "\n" .. text_data) or text_data
+	line_ov.data = text_data
 	line_ov:update()
 end
 function M.show_line_translation(translated, error_text)
@@ -319,7 +256,14 @@ local function render_popup_panel(display, header, anchor)
 	end
 
 	local an, px, py
-	if anchor and anchor.w and anchor.h and anchor.x then
+	if anchor and anchor.fixed then
+		an = 8
+		px = math.floor(w / 2)
+		py = math.floor(h * 0.30)
+		if py + box_h > h - 4 then
+			py = math.max(4, math.floor(h - box_h - 4))
+		end
+	elseif anchor and anchor.w and anchor.h and anchor.x then
 		local cx = anchor.x + anchor.w / 2
 		local half = box_w / 2 + 4
 		if cx < half then
@@ -450,6 +394,7 @@ function M.clear_popup()
 	popup_ov:remove()
 	popup_paging.lines = nil
 	popup_paging.offset = 0
+	popup_paging.fixed = nil
 end
 
 local function popup_render_page()
@@ -472,7 +417,9 @@ local function popup_render_page()
 		}
 	end
 	local anchor
-	if popup_paging.word then
+	if popup_paging.fixed then
+		anchor = { fixed = true }
+	elseif popup_paging.word then
 		anchor = popup_paging.word
 	else
 		anchor = { cursor_x = popup_paging.mx, cursor_y = popup_paging.my }
@@ -487,6 +434,18 @@ function M.popup_set(lines, header, word, mx, my)
 	popup_paging.word = word
 	popup_paging.mx = mx
 	popup_paging.my = my
+	popup_paging.fixed = nil
+	popup_render_page()
+end
+
+function M.popup_set_fixed(lines, header)
+	popup_paging.lines = lines
+	popup_paging.offset = 0
+	popup_paging.header = header
+	popup_paging.word = nil
+	popup_paging.mx = nil
+	popup_paging.my = nil
+	popup_paging.fixed = true
 	popup_render_page()
 end
 

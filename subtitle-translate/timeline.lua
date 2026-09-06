@@ -12,6 +12,10 @@ local tl = {
 	queue = {},
 	head = 1,
 	active = 0,
+	inflight = {},
+	quota_until = {},
+	loading = false,
+	loaded_sig = nil,
 	gen = 0,
 	ffmpeg_path = false,
 	debounce = nil,
@@ -41,12 +45,6 @@ local function parse_timestamp(s)
 		+ (tonumber(frac) or 0) / (10 ^ #frac)
 end
 
-local function clean_subtitle_text(text)
-	text = text:gsub("%{[^}]*%}", "")
-	text = text:gsub("\\[Nnh]", " ")
-	return util.trim(util.strip_tags(util.html_unescape(text)))
-end
-
 local function parse_ass_content(content)
 	local entries = {}
 	for line in content:gmatch("[^\r\n]+") do
@@ -55,7 +53,7 @@ local function parse_ass_content(content)
 			for _ = 1, 7 do
 				tail = tail:match("^[^,]*,(.*)$") or ""
 			end
-			entries[#entries + 1] = { start = parse_timestamp(start_s) or 0, text = clean_subtitle_text(tail) }
+			entries[#entries + 1] = { start = parse_timestamp(start_s) or 0, text = util.clean_subtitle_text(tail) }
 		end
 	end
 	return entries
@@ -67,7 +65,7 @@ local function parse_srt_content(content)
 	local pending_start, buf = nil, {}
 	local function flush()
 		if pending_start and #buf > 0 then
-			entries[#entries + 1] = { start = pending_start, text = clean_subtitle_text(table.concat(buf, " ")) }
+			entries[#entries + 1] = { start = pending_start, text = util.clean_subtitle_text(table.concat(buf, " ")) }
 		end
 		pending_start, buf = nil, {}
 	end
@@ -259,6 +257,10 @@ local function tl_reset()
 	tl.queue = {}
 	tl.head = 1
 	tl.active = 0
+	tl.inflight = {}
+	tl.loading = false
+	tl.loaded_sig = nil
+	-- quota survives reload
 	tl.raw_content = nil
 	tl.raw_ext = nil
 	tl.style = nil
@@ -293,12 +295,57 @@ local function selected_sub_track()
 	end
 	return nil
 end
+local function is_quota_error(err)
+	if type(err) ~= "string" then
+		return false
+	end
+	local e = err:lower()
+	return e:find("quota", 1, true) ~= nil
+		or e:find("429", 1, true) ~= nil
+		or e:find("rate limit", 1, true) ~= nil
+		or e:find("ratelimit", 1, true) ~= nil
+		or e:find("too many requests", 1, true) ~= nil
+		or e:find("over_query", 1, true) ~= nil
+		or e:find("daily limit", 1, true) ~= nil
+		-- edge rejections: no retry can fix
+		or e:find("forbidden", 1, true) ~= nil
+		or e:find("403", 1, true) ~= nil
+		or e:find("blocked", 1, true) ~= nil
+		or e:find("bot check", 1, true) ~= nil
+end
+
+-- quota pauses are per-provider
+function M.quota_active(provider)
+	provider = provider or (opts and opts.provider)
+	return mp.get_time() < (tl.quota_until[provider] or 0)
+end
+
+function M.quota_eta_min(provider)
+	provider = provider or (opts and opts.provider)
+	return math.max(1, math.ceil(((tl.quota_until[provider] or 0) - mp.get_time()) / 60))
+end
+
+function M.report_quota(err, provider)
+	if not is_quota_error(err) then
+		return false
+	end
+	provider = provider or (opts and opts.provider)
+	local now = mp.get_time()
+	if now >= (tl.quota_until[provider] or 0) then
+		util.log("prefetch paused 5 min (" .. tostring(provider) .. "): " .. tostring(err))
+	end
+	tl.quota_until[provider] = now + 300
+	return true
+end
 
 local function prefetch_step()
 	if not opts.prefetch or #tl.entries == 0 then
 		return
 	end
-	if tl.active >= (opts.prefetch_concurrency or 4) then
+	if tl.active >= (opts.prefetch_concurrency or 2) then
+		return
+	end
+	if M.quota_active() then
 		return
 	end
 	local now = mp.get_property_number("playback-time") or mp.get_property_number("time-pos") or 0
@@ -320,37 +367,58 @@ local function prefetch_step()
 	end
 	for _, i in ipairs(order) do
 		local entry = tl.entries[i]
-		if not cache.has_cached("sentence", entry.text) then
+		if not cache.has_cached("sentence", entry.text) and not tl.inflight[entry.text] then
+			tl.inflight[entry.text] = true
 			tl.active = tl.active + 1
 			if opts.verbose then
 				util.log("prefetch: translating line " .. i .. "/" .. #tl.entries)
 			end
 			providers.lookup("sentence", entry.text, function(_, err)
+				tl.inflight[entry.text] = nil
 				tl.active = tl.active - 1
-				if err and opts.verbose then
-					util.log("prefetch failed: " .. err)
+				if err then
+					if not M.report_quota(err) and opts.verbose then
+						util.log("prefetch failed: " .. err)
+					end
 				end
-				mp.add_timeout(0.3, prefetch_step)
+				mp.add_timeout(1.0, prefetch_step)
 			end)
 			return
 		end
 	end
 end
 
+local schedule_timeline_reload
+local function tl_signature(track)
+	if track.external and track["external-filename"] then
+		return "ext:" .. track["external-filename"]
+	end
+	return "emb:" .. tostring(mp.get_property("path")) .. "#" .. tostring(track["ff-index"])
+end
+
 local function load_timeline()
-	tl_reset()
 	local track = selected_sub_track()
 	if not track then
+		tl_reset()
 		return
 	end
+	local sig = tl_signature(track)
+	-- guard against double reload
+	if tl.loading or (tl.loaded_sig == sig and #tl.entries > 0) then
+		return
+	end
+	tl_reset()
+	tl.loading = true
 	local gen = tl.gen
 	if track.external and track["external-filename"] then
 		local path = track["external-filename"]
 		if path:match("^%a+:") then
+			tl.loading = false
 			return
 		end
 		local f = io.open(path, "r")
 		if not f then
+			tl.loading = false
 			return
 		end
 		local content = f:read("*a")
@@ -359,10 +427,12 @@ local function load_timeline()
 		tl.raw_content = content
 		tl.raw_ext = ext
 		tl.entries = M.finalize_entries(M.parse_subtitle_content(content, ext))
+		tl.loaded_sig = sig
+		tl.loading = false
 		if opts.verbose then
 			util.log("prefetch timeline ready: " .. #tl.entries .. " lines from external subtitle file")
 		end
-		for _ = 1, (opts.prefetch_concurrency or 4) do
+		for _ = 1, (opts.prefetch_concurrency or 2) do
 			prefetch_step()
 		end
 		return
@@ -371,6 +441,7 @@ local function load_timeline()
 	local ff_index = track["ff-index"]
 	local ffmpeg = find_ffmpeg()
 	if not media_path or media_path:match("^%a+:") or ff_index == nil or not ffmpeg then
+		tl.loading = false
 		return
 	end
 	mp.command_native_async({
@@ -392,7 +463,18 @@ local function load_timeline()
 		capture_stderr = true,
 		playback_only = false,
 	}, function(success, result)
+		tl.loading = false
 		if gen ~= tl.gen then
+			return
+		end
+		-- drop stale ffmpeg results
+		local cur = selected_sub_track()
+		if not cur then
+			tl_reset()
+			return
+		end
+		if tl_signature(cur) ~= sig then
+			schedule_timeline_reload(0.2)
 			return
 		end
 		if not success or not result or result.status ~= 0 or not result.stdout or result.stdout == "" then
@@ -404,16 +486,17 @@ local function load_timeline()
 		tl.raw_content = result.stdout
 		tl.raw_ext = "ass"
 		tl.entries = M.finalize_entries(M.parse_subtitle_content(result.stdout, "ass"))
+		tl.loaded_sig = sig
 		if opts.verbose then
 			util.log("prefetch timeline ready: " .. #tl.entries .. " lines from embedded subtitle track")
 		end
-		for _ = 1, (opts.prefetch_concurrency or 4) do
+		for _ = 1, (opts.prefetch_concurrency or 2) do
 			prefetch_step()
 		end
 	end)
 end
 
-local function schedule_timeline_reload(delay)
+schedule_timeline_reload = function(delay)
 	if tl.debounce then
 		tl.debounce:kill()
 	end

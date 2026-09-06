@@ -112,6 +112,12 @@ function M.strip_tags(s)
 	return M.trim((s:gsub("<[^>]*>", "")):gsub("%s+", " "))
 end
 
+function M.clean_subtitle_text(text)
+	text = text:gsub("%{[^}]*%}", " ")
+	text = text:gsub("\\[Nnh]", " ")
+	return M.trim(M.strip_tags(M.html_unescape(text)))
+end
+
 function M.ass_escape(s)
 	s = s:gsub("\\", "\\\\")
 	s = s:gsub("{", "\\{"):gsub("}", "\\}")
