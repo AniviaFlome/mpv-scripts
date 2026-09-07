@@ -108,6 +108,7 @@ DeepL
 | Option | Default | Description |
 | --- | --- | --- |
 | `deepl_api_key` | _(empty)_ | Pro API key (`:fx` suffix = free tier) |
+| `deepl_api_path` | _(empty)_ | Path for the secret |
 
 LibreTranslate
 
@@ -115,6 +116,7 @@ LibreTranslate
 | --- | --- | --- |
 | `libretranslate_url` | `https://libretranslate.com` | Self-hosted instance |
 | `libretranslate_api_key` | _(empty)_ | If the instance needs one |
+| `libretranslate_api_path` | _(empty)_ | Path for the secret |
 
 Lingva
 
@@ -127,13 +129,16 @@ MyMemory
 | Option | Default | Description |
 | --- | --- | --- |
 | `mymemory_email` | _(empty)_ | Raises anonymous quota |
+| `mymemory_email_path` | _(empty)_ | Path for the secret |
 
 Yandex
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `yandex_api_key` | _(empty)_ | Service-account API key |
+| `yandex_api_path` | _(empty)_ | Path for the secret |
 | `yandex_folder_id` | _(empty)_ | Folder ID |
+| `yandex_folder_id_path` | _(empty)_ | Path for the secret |
 
 `mymemory` (without email), `google` and `duckduckgo` need no credentials.
 
@@ -182,7 +187,9 @@ Baidu OCR (cloud account needed)
 | Option | Default | Description |
 | --- | --- | --- |
 | `baiduocr_api_key` | _(empty)_ | App API Key |
+| `baiduocr_api_path` | _(empty)_ | Path for the secret |
 | `baiduocr_secret_key` | _(empty)_ | App Secret Key |
+| `baiduocr_secret_path` | _(empty)_ | Path for the secret |
 
 ## Example config
 

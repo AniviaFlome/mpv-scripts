@@ -113,9 +113,45 @@ local opts = {
 	-- baidu ocr credentials: cloud account and app keys
 	baiduocr_api_key = "",
 	baiduocr_secret_key = "",
+
+	-- secret files: each holds just that value (e.g. a sops-nix secret).
+	-- when set and readable, the file wins over the inline option above.
+	deepl_api_path = "",
+	libretranslate_api_path = "",
+	mymemory_email_path = "",
+	yandex_api_path = "",
+	yandex_folder_id_path = "",
+	baiduocr_api_path = "",
+	baiduocr_secret_path = "",
 }
 
 options.read_options(opts, "subtitle-translate")
+
+-- sensitive keys only: secret files override the inline value
+local SECRET_PATHS = {
+	deepl_api_key = "deepl_api_path",
+	libretranslate_api_key = "libretranslate_api_path",
+	mymemory_email = "mymemory_email_path",
+	yandex_api_key = "yandex_api_path",
+	yandex_folder_id = "yandex_folder_id_path",
+	baiduocr_api_key = "baiduocr_api_path",
+	baiduocr_secret_key = "baiduocr_secret_path",
+}
+
+for key, path_opt in pairs(SECRET_PATHS) do
+	local path = util.trim(opts[path_opt] or "")
+	if path ~= "" then
+		local value, err = util.read_secret_file(path)
+		if value then
+			opts[key] = value
+			if opts.verbose then
+				util.log(key .. " loaded from file (" .. value:len() .. " chars): " .. path)
+			end
+		else
+			util.log("warning: " .. path_opt .. " unreadable (" .. tostring(err) .. "): " .. path)
+		end
+	end
+end
 
 -- deprecated alias: key_search_word -> key_dict_box
 if opts.key_search_word ~= "" and opts.key_dict_box == "Alt+d" then

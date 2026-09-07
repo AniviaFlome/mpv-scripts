@@ -233,4 +233,40 @@ function M.normalize_sub(text)
 	return M.trim((text:gsub("%s*\n%s*", " ")))
 end
 
+function M.expand_path(path)
+	if type(path) ~= "string" then
+		return path
+	end
+	if path:sub(1, 1) == "~" and (path:sub(2, 2) == "/" or path == "~") then
+		local home = os.getenv("HOME")
+		if type(home) == "string" and home ~= "" then
+			return home .. path:sub(2)
+		end
+	end
+	return path
+end
+
+-- Reads a file holding just one secret value (e.g. a sops-nix secret).
+-- Returns trimmed value, or nil + reason ("missing", "unreadable", "empty").
+function M.read_secret_file(path)
+	if type(path) ~= "string" or M.trim(path) == "" then
+		return nil, "missing"
+	end
+	local expanded = M.expand_path(M.trim(path))
+	local f, ferr = io.open(expanded, "r")
+	if not f then
+		return nil, "unreadable: " .. tostring(ferr)
+	end
+	local content = f:read("*a")
+	f:close()
+	if type(content) ~= "string" then
+		return nil, "unreadable"
+	end
+	local value = M.trim(content)
+	if value == "" then
+		return nil, "empty"
+	end
+	return value
+end
+
 return M
