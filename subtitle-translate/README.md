@@ -48,9 +48,9 @@ Panel
 | Option | Default | Description |
 | --- | --- | --- |
 | `bg_opacity` | `55` | |
-| `color_bg` | `101010` | |
-| `color_outline` | `101010` | |
-| `color_text` | `ffffff` | |
+| `color_bg` | `#101010` | |
+| `color_outline` | `#101010` | |
+| `color_text` | `#ffffff` | |
 | `font` | `sans-serif` | |
 | `margin_y` | `24` | |
 | `max_width_percent` | `80` | |
@@ -62,8 +62,8 @@ Hover dictionary
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `accent` | `#ff5555` | `#` | |
-| `color_mirror` | `ffffff` | |
+| `accent` | `#ff5555` | |
+| `color_mirror` | `#ffffff` | |
 | `hover_backend` | `replica` | `replica` / `native` / `mirror` |
 | `mirror_font` | `monospace` | |
 | `mirror_font_size` | `30` | |
@@ -145,16 +145,16 @@ General
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `ocr_enabled` | `yes` | |
 | `ocr_backend` | `tesseract` | `tesseract` / `custom` / `rapidocr` / `easyocr` / `paddleocr` / `baiduocr` |
 | `ocr_crop_h` | `0.25` | |
-| `ocr_display_seconds` | `5` | Auto-hide panel |
-| `ocr_enabled` | `yes` | |
-| `ocr_lang` | _(empty)_ | Overrides `lang_from` for OCR |
-| `ocr_max_chars` | `200` | Drop longer reads |
-| `ocr_min_alpha_ratio` | `0.5` | Drop symbol soup (`0` disables) |
-| `ocr_min_chars` | `2` | Drop shorter reads |
 | `ocr_scale` | `2` | |
 | `ocr_sharpen` | yes | |
+| `ocr_lang` | _(empty)_ | Overrides `lang_from` for OCR |
+| `ocr_min_chars` | `2` | Drop shorter reads |
+| `ocr_max_chars` | `200` | Drop longer reads |
+| `ocr_min_alpha_ratio` | `0.5` | Drop symbol soup (`0` disables) |
+| `ocr_display_seconds` | `5` | Auto-hide panel |
 
 Tesseract only
 

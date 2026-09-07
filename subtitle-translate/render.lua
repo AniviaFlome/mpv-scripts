@@ -40,7 +40,7 @@ local function build_bg_content(an, x, y, bw, bh, color, alpha, bord, bord_color
 		x,
 		y,
 		string.format("%.1f", bord or 0),
-		util.ass_color(bord_color or "000000"),
+		util.ass_color(bord_color or "#000000"),
 		util.ass_color(color),
 		alpha,
 		bw,
@@ -382,7 +382,7 @@ local function render_popup_panel(display, header, anchor)
 			opts.color_bg,
 			util.ass_alpha(math.min(100, opts.bg_opacity + 25)),
 			math.max(1, math.floor(fs * 0.06)),
-			"5a5a5a"
+			"#5a5a5a"
 		)
 		popup_ov.compute_bounds = false
 		popup_ov.data = bg_data .. "\n" .. build_text_content(an, px, py, base .. table.concat(parts, "\\N"))
@@ -653,10 +653,10 @@ local function render_hitboxes(layout)
 				math.floor(wd.y),
 				math.ceil(wd.w),
 				math.ceil(wh),
-				"204060",
-				util.ass_alpha(65),
-				1,
-				"ff3333"
+			"#204060",
+			util.ass_alpha(65),
+			1,
+			"#ff3333"
 			)
 		end
 	end
@@ -666,10 +666,10 @@ local function render_hitboxes(layout)
 		math.floor(layout.y0),
 		math.ceil(layout.x1 - layout.x0),
 		math.ceil(layout.y1 - layout.y0),
-		"000000",
+		"#000000",
 		"&HFF",
 		1,
-		"4466ff"
+		"#4466ff"
 	)
 	debug_ov.res_x = w
 	debug_ov.res_y = h

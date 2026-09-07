@@ -152,7 +152,7 @@ local function render()
 			bx,
 			by,
 			bord,
-			util.ass_color("5a5a5a"),
+			util.ass_color("#5a5a5a"),
 			util.ass_color(opts.color_bg),
 			util.ass_alpha(math.min(100, opts.bg_opacity + 25)),
 			bw,

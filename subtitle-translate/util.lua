@@ -126,13 +126,18 @@ function M.ass_escape(s)
 end
 
 function M.ass_color(rgb)
-	rgb = M.trim(rgb or ""):gsub("^#", "")
-	if type(rgb) ~= "string" or rgb:len() ~= 6 or not rgb:match("^%x+$") then
-		rgb = "ffffff"
+	if type(rgb) ~= "string" then
+		rgb = ""
+	else
+		rgb = M.trim(rgb)
 	end
-	local r = tonumber(rgb:sub(1, 2), 16)
-	local g = tonumber(rgb:sub(3, 4), 16)
-	local b = tonumber(rgb:sub(5, 6), 16)
+	local hex = rgb:match("^#(%x+)$")
+	if not hex or hex:len() ~= 6 then
+		hex = "ffffff"
+	end
+	local r = tonumber(hex:sub(1, 2), 16)
+	local g = tonumber(hex:sub(3, 4), 16)
+	local b = tonumber(hex:sub(5, 6), 16)
 	return string.format("&H%02X%02X%02X", b, g, r)
 end
 
