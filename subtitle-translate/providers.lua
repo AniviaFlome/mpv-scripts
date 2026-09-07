@@ -310,6 +310,64 @@ providers.deepl = {
 	end,
 }
 
+local function parse_yandex(body)
+	local data = utils.parse_json(body)
+	if not data then
+		return nil, "invalid response from yandex"
+	end
+	if
+		type(data.translations) == "table"
+		and type(data.translations[1]) == "table"
+		and type(data.translations[1].text) == "string"
+	then
+		return data.translations[1].text
+	end
+	local code = tonumber(data.code) or 0
+	local msg = tostring(data.message or "")
+	if msg == "" then
+		msg = "unknown error"
+	end
+	if code == 8 or msg:lower():find("quota", 1, true) then
+		return nil, "yandex quota exceeded (429): " .. msg
+	end
+	if code == 16 then
+		return nil, "yandex: unauthorized — check yandex_api_key"
+	end
+	return nil, "yandex: " .. msg .. (code ~= 0 and (" (code " .. code .. ")") or "")
+end
+
+providers.yandex = {
+	sentence = function(text, cb)
+		if opts.yandex_api_key == "" then
+			cb(nil, "yandex needs a service-account API key — set yandex_api_key (and yandex_folder_id)")
+			return
+		end
+		local body = '{"texts":[' .. json_quote(text) .. '],"targetLanguageCode":' .. json_quote(opts.lang_to)
+		if opts.yandex_folder_id ~= "" then
+			body = body .. ',"folderId":' .. json_quote(opts.yandex_folder_id)
+		end
+		if opts.lang_from ~= "" and opts.lang_from ~= "auto" then
+			body = body .. ',"sourceLanguageCode":' .. json_quote(opts.lang_from)
+		end
+		body = body .. "}"
+		http_request({
+			url = "https://translate.api.cloud.yandex.net/translate/v2/translate",
+			method_label = "POST yandex",
+			headers = {
+				"Authorization: Api-Key " .. opts.yandex_api_key,
+				"Content-Type: application/json",
+			},
+			body = body,
+		}, function(resp, err)
+			if not resp then
+				cb(nil, err)
+				return
+			end
+			cb(parse_yandex(resp))
+		end)
+	end,
+}
+
 local ddg_vqd = nil
 
 local function parse_ddg_vqd(body)
@@ -648,6 +706,7 @@ M.parse = {
 	mymemory = parse_mymemory,
 	libretranslate = parse_libretranslate,
 	deepl = parse_deepl,
+	yandex = parse_yandex,
 	duckduckgo = parse_duckduckgo,
 	duckduckgo_vqd = parse_ddg_vqd,
 	cambridge_suggest = parse_cambridge_suggest,

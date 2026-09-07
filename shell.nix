@@ -7,5 +7,14 @@ pkgs.mkShell {
     luajit
     ffmpeg
     socat
+    tesseract
+    ccache
+    (python313.withPackages (ps: with ps; [
+      rapidocr-onnxruntime
+      easyocr
+      paddleocr
+      imagesize
+      pypdfium2
+    ]))
   ];
 }

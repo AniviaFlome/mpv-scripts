@@ -315,7 +315,7 @@ local function render_popup_panel(display, header, anchor)
 		parts[#parts + 1] = "{\\fs"
 			.. header_fs
 			.. "\\1c"
-			.. util.ass_color(opts.hovered_color)
+			.. util.ass_color(opts.accent)
 			.. "\\b1\\bord0}"
 			.. util.ass_escape(header)
 			.. "{\\fs"
@@ -329,7 +329,7 @@ local function render_popup_panel(display, header, anchor)
 			parts[#parts + 1] = "{\\fs"
 				.. header_fs
 				.. "\\1c"
-				.. util.ass_color(opts.hovered_color)
+				.. util.ass_color(opts.accent)
 				.. "\\b1\\bord0}"
 				.. util.ass_escape(d.text)
 				.. "{\\fs"
@@ -470,7 +470,7 @@ local function render_mirror_line(layout, highlight_idx)
 		.. "\\1c"
 		.. util.ass_color(opts.color_mirror)
 		.. "\\bord0\\shad0\\q2}"
-	local hl_style = "{\\1c" .. util.ass_color(opts.hovered_color) .. "}"
+	local hl_style = "{\\1c" .. util.ass_color(opts.accent) .. "}"
 	local norm_style = "{\\1c" .. util.ass_color(opts.color_mirror) .. "}"
 	local max_cols = 0
 	local row_lines = {}
@@ -568,7 +568,7 @@ local function render_replica_line(layout, highlight_idx)
 		base = base .. string.format("\\fsp%.2f", s.spacing * scale)
 	end
 	base = base .. "}"
-	local hl = "{\\1c" .. util.ass_color(opts.hovered_color) .. "\\u1}"
+	local hl = "{\\1c" .. util.ass_color(opts.accent) .. "\\u1}"
 	local norm = "{\\1c" .. (s.primary or "&HFFFFFF") .. "\\u0}"
 
 	local lines = {}

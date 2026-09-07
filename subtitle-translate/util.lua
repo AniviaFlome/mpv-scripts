@@ -126,6 +126,7 @@ function M.ass_escape(s)
 end
 
 function M.ass_color(rgb)
+	rgb = M.trim(rgb or ""):gsub("^#", "")
 	if type(rgb) ~= "string" or rgb:len() ~= 6 or not rgb:match("^%x+$") then
 		rgb = "ffffff"
 	end

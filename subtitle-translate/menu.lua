@@ -8,12 +8,13 @@ local opts = nil
 local actions = {}
 local input = nil
 
-local PROVIDERS = { "mymemory", "google", "duckduckgo", "lingva", "libretranslate", "deepl" }
+local PROVIDERS = { "mymemory", "google", "duckduckgo", "lingva", "libretranslate", "deepl", "yandex" }
 local WORD_PROVIDERS = { "tureng", "cambridge", "wiktionary", "reverso" }
 local LANGS_FROM = { "en", "tr", "de", "fr", "es", "it", "ru", "ja", "zh", "ar", "auto" }
 local LANGS_TO = { "en", "tr", "de", "fr", "es", "it", "ru", "ja", "zh", "ar" }
 local POSITIONS = { "top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right" }
 local HOVER_BACKENDS = { "replica", "native", "mirror" }
+local OCR_BACKENDS = { "tesseract", "custom", "rapidocr", "easyocr", "paddleocr", "baiduocr" }
 local CUSTOM_ITEM = "custom… (type it)"
 
 local function notify(text, duration)
@@ -125,9 +126,23 @@ local function open_section(id)
 		toggle_bool("prefetch", nil)
 	elseif id == 8 then
 		toggle_bool("prefetch_all", nil)
+	elseif id == 9 then
+		open_choice("OCR backend:", OCR_BACKENDS, tostring(opts.ocr_backend), function(pick)
+			apply("ocr_backend", pick, nil)
+			M.open()
+		end)
+	elseif id == 10 then
+		toggle_bool("ocr_enabled", nil)
 	else
 		M.open()
 	end
+end
+
+local function ocr_status()
+	if not opts.ocr_enabled then
+		return "off"
+	end
+	return tostring(opts.ocr_backend)
 end
 
 local function root_items()
@@ -140,6 +155,8 @@ local function root_items()
 		"Hover backend: " .. tostring(opts.hover_backend),
 		"Prefetch subtitles: " .. bool_label(opts.prefetch),
 		"Prefetch whole file: " .. bool_label(opts.prefetch_all),
+		"OCR backend: " .. ocr_status(),
+		"OCR enabled: " .. bool_label(opts.ocr_enabled),
 	}
 end
 

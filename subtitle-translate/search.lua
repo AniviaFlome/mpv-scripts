@@ -138,7 +138,7 @@ local function render()
 		.. "\\bord"
 		.. math.max(1, math.floor(opts.outline_width * h / 1080 + 0.5))
 		.. "\\shad0}"
-	local hl = "{\\1c" .. util.ass_color(opts.hovered_color) .. "\\b1}"
+	local hl = "{\\1c" .. util.ass_color(opts.accent) .. "\\b1}"
 	local norm = "{\\1c" .. util.ass_color(opts.color_text) .. "\\b0}"
 	local dim = "{\\1c&H999999&\\bord0}"
 	local lines = {}

@@ -11,19 +11,26 @@ local timeline = require("timeline")
 local menu = require("menu")
 local search = require("search")
 local translate = require("translate")
+local ocr = require("ocr")
 
 local opts = {
+	-- keys, all rebindable, empty unbinds
 	key_cycle_mode = "Alt+t",
 	key_show_translation = "Ctrl+y",
 	key_settings_menu = "Alt+T",
 	key_dict_box = "Alt+d",
 	key_translate_box = "Alt+D",
-	key_search_word = "",
-	mode_on_start = "off",
-	provider = "mymemory",
+	key_search_word = "", -- deprecated alias of key_dict_box
+	key_ocr = "Alt+y",
+
+	-- translation
+	mode_on_start = "off", -- off / dict / ondemand / always
+	provider = "mymemory", -- mymemory / google / duckduckgo / lingva / libretranslate / deepl
+	word_provider = "cambridge", -- tureng / cambridge / wiktionary / reverso
 	lang_from = "en",
 	lang_to = "tr",
 
+	-- panel
 	position = "top-center",
 	margin_y = 24,
 	font = "sans-serif",
@@ -35,18 +42,18 @@ local opts = {
 	max_width_percent = 80,
 	panel_font_scale = 0.85,
 
-	hover_backend = "replica",
+	-- hover dictionary, mode 1
+	hover_backend = "replica", -- replica / native / mirror
 	replica_font_size = 38,
 	replica_outline = 3,
-	hovered_color = "ff5555",
+	accent = "ff5555", -- "#" prefix ok
 	dict_url_template = "https://tureng.com/en/turkish-english/{word}",
-	word_provider = "cambridge",
-
 	mirror_font = "monospace",
 	mirror_font_size = 30,
 	mirror_margin_y = 56,
 	color_mirror = "ffffff",
 
+	-- dictionary popup
 	dict_max_groups = 4,
 	dict_max_terms = 6,
 	dict_max_lines = 6,
@@ -54,7 +61,8 @@ local opts = {
 	popup_font_size = 32,
 	popup_padding_x = 0.35,
 	popup_padding_y = 0.12,
-	timeout = 10,
+
+	-- prefetch + cache
 	prefetch = true,
 	prefetch_all = false,
 	prefetch_concurrency = 2,
@@ -62,16 +70,49 @@ local opts = {
 	disk_cache = true,
 	cache_dir = "",
 	cache_max_entries = 5000,
+
+	-- debugging
 	verbose = false,
 	show_hitboxes = false,
 
+	-- OCR hardsubs: one-shot capture -> recognize -> translate -> panel
+	ocr_enabled = true,
+	ocr_backend = "tesseract", -- tesseract / custom / rapidocr / easyocr / paddleocr
+	-- capture and filtering, all backends
+	ocr_ffmpeg_bin = "ffmpeg",
+	ocr_crop_h = 0.25,
+	ocr_scale = 2,
+	ocr_sharpen = true,
+	ocr_lang = "",
+	ocr_min_chars = 2,
+	ocr_max_chars = 200,
+	ocr_min_alpha_ratio = 0.5,
+	ocr_display_seconds = 5,
+	-- tesseract only
+	ocr_tesseract_bin = "tesseract",
+	ocr_psm = 6,
+	ocr_oem = 1,
+	ocr_tessconfig = "",
+	ocr_blacklist = "|\\@#¥§©®™°^~\\",
+	-- python backends: rapidocr, easyocr, paddleocr
+	ocr_cuda = false,
+	-- custom backend
+	ocr_command = "",
+
+	-- provider credentials
 	deepl_api_key = "",
-	-- deprecated (ignored): host is auto-detected from key suffix
+	-- deprecated, ignored: host is auto-detected from key suffix
 	deepl_free = true,
 	libretranslate_url = "https://libretranslate.com",
 	libretranslate_api_key = "",
 	lingva_instance = "https://lingva.ml",
 	mymemory_email = "",
+	yandex_api_key = "",
+	yandex_folder_id = "",
+
+	-- baidu ocr credentials: cloud account and app keys
+	baiduocr_api_key = "",
+	baiduocr_secret_key = "",
 }
 
 options.read_options(opts, "subtitle-translate")
@@ -86,6 +127,7 @@ providers.init(opts)
 layout.init(opts)
 render.init(opts)
 timeline.init(opts)
+ocr.init(opts)
 
 local MODES = { "off", "dict", "ondemand", "always" }
 local MODE_LABEL = {
@@ -807,6 +849,7 @@ local function update_line_translation()
 	end
 	line_ui.text = text
 	line_ui.display = display
+	line_ui.ocr = false
 	line_ui.translated = nil
 	line_ui.error = nil
 	if timeline.quota_active() then
@@ -834,6 +877,155 @@ end
 
 local function tick_ondemand()
 	render_panel()
+end
+
+-- OCR glue: OCR text feeds the sentence pipeline.
+-- One-shot only, no auto-poll: engines are slower than realtime.
+
+-- explicit keypress force-shows the panel even in mode off and dict
+local function render_ocr_panel()
+	if line_ui.translated ~= nil or line_ui.error ~= nil then
+		line_ui.shown = true
+		render.show_line_translation(line_ui.translated, line_ui.error)
+		return
+	end
+	render_panel()
+end
+
+local ocr_hide_timer = nil
+
+local function clear_ocr_panel()
+	line_ui.seq = line_ui.seq + 1
+	line_ui.text = nil
+	line_ui.display = nil
+	line_ui.translated = nil
+	line_ui.error = nil
+	line_ui.pending = false
+	line_ui.ocr = false
+	line_ui.shown = false
+	line_ui.rendered_key = nil
+	line_ui.pinned_line = nil
+	render.hide_line_translation()
+end
+
+-- OCR results never expire on their own: hide after ocr_display_seconds
+-- unless replaced. 0 disables.
+local function schedule_ocr_hide(text)
+	if ocr_hide_timer then
+		ocr_hide_timer:kill()
+		ocr_hide_timer = nil
+	end
+	local secs = tonumber(opts.ocr_display_seconds) or 0
+	if secs <= 0 or text == "" then
+		return
+	end
+	ocr_hide_timer = mp.add_timeout(secs, function()
+		ocr_hide_timer = nil
+		if not line_ui.ocr or line_ui.text ~= text then
+			return
+		end
+		clear_ocr_panel()
+		if opts.verbose then
+			log("ocr: panel auto-hidden after " .. secs .. "s")
+		end
+	end)
+end
+
+local function translate_ocr_text(text, backend)
+	text = util.normalize_sub(util.clean_subtitle_text(text or ""))
+	if text == "" then
+		return
+	end
+	if line_ui.text == text and (line_ui.pending or line_ui.translated ~= nil or line_ui.error ~= nil) then
+		render_ocr_panel()
+		schedule_ocr_hide(text)
+		return
+	end
+	line_ui.text = text
+	line_ui.display = "[OCR] " .. text
+	line_ui.ocr = true
+	line_ui.translated = nil
+	line_ui.error = nil
+	if timeline.quota_active() then
+		line_ui.pending = false
+		line_ui.error = paused_error()
+		render_ocr_panel()
+		schedule_ocr_hide(text)
+		return
+	end
+	line_ui.pending = true
+	line_ui.seq = line_ui.seq + 1
+	local seq = line_ui.seq
+	if opts.verbose then
+		log("ocr: translating (" .. tostring(backend or opts.ocr_backend) .. "): " .. text:sub(1, 80))
+	end
+	providers.lookup("sentence", text, function(res, err)
+		if seq ~= line_ui.seq or line_ui.text ~= text then
+			return
+		end
+		line_ui.pending = false
+		if err then
+			timeline.report_quota(err)
+		end
+		apply_line_result(res, err)
+		render_ocr_panel()
+		schedule_ocr_hide(text)
+	end)
+	render_ocr_panel()
+end
+
+local function ocr_now()
+	if not opts.ocr_enabled then
+		notify("OCR disabled (ocr_enabled=no)")
+		return
+	end
+	-- hide instead of re-running when a result shows
+	if line_ui.ocr and not line_ui.pending and (line_ui.translated ~= nil or line_ui.error ~= nil) then
+		if ocr_hide_timer then
+			ocr_hide_timer:kill()
+			ocr_hide_timer = nil
+		end
+		clear_ocr_panel()
+		notify("OCR hidden")
+		return
+	end
+	if timeline.quota_active() then
+		notify(paused_error())
+		return
+	end
+	notify("OCR (" .. tostring(opts.ocr_backend) .. ")…")
+	ocr.recognize_now(function(text, info, err)
+		if err then
+			if err == "ocr busy" then
+				notify("OCR still running — please wait, do not press again")
+			else
+				notify("OCR failed: " .. tostring(err))
+			end
+			return
+		end
+		if not text or text == "" then
+			notify("OCR: no text found")
+			return
+		end
+		if state == "ondemand" then
+			line_ui.pinned_line = util.normalize_sub(util.clean_subtitle_text(text))
+		end
+		translate_ocr_text(text, info and info.backend)
+	end)
+end
+
+local function ocr_check()
+	local names = ocr.list_backends()
+	local parts = {}
+	for _, name in ipairs(names) do
+		local b = ocr.get_backend(name)
+		local ok = true
+		if b and type(b.check) == "function" then
+			ok = b.check()
+		end
+		parts[#parts + 1] = name .. (ok and "" or " (missing)")
+	end
+	notify("OCR backends: " .. table.concat(parts, ", ") .. " | active: " .. tostring(opts.ocr_backend))
 end
 
 local function on_sub_change_inner(_name, text)
@@ -876,11 +1068,17 @@ end
 local function apply_state(new_state, quiet)
 	state = new_state
 	providers.cancel_requests()
+	ocr.cancel()
+	if ocr_hide_timer then
+		ocr_hide_timer:kill()
+		ocr_hide_timer = nil
+	end
 	line_ui.seq = line_ui.seq + 1
 	line_ui.text = nil
 	line_ui.translated = nil
 	line_ui.error = nil
 	line_ui.pending = false
+	line_ui.ocr = false
 	line_ui.pinned_line = nil
 	line_ui.shown = false
 	line_ui.rendered_key = nil
@@ -956,9 +1154,14 @@ mp.register_script_message("set-mode", function(name)
 	set_mode_from_name(name)
 end)
 mp.register_script_message("show-translation", manual_show)
+mp.register_script_message("ocr-now", ocr_now)
+mp.register_script_message("ocr-check", ocr_check)
 
 mp.add_key_binding(opts.key_cycle_mode, "cycle_mode", cycle_mode)
 mp.add_key_binding(opts.key_show_translation, "show_translation", manual_show)
+if opts.key_ocr and opts.key_ocr ~= "" then
+	mp.add_key_binding(opts.key_ocr, "ocr_now", ocr_now)
+end
 
 menu.init(opts, {
 	notify = notify,
@@ -1067,6 +1270,7 @@ end
 
 mp.observe_property("sub-text", "string", on_sub_change)
 mp.observe_property("sid", "number", function()
+	ocr.reset()
 	timeline.schedule_reload(0.4)
 end)
 for _, prop in ipairs({ "sub-pos", "sub-margin-x", "sub-margin-y", "sub-align-x", "sub-align-y", "sub-use-margins" }) do
@@ -1090,18 +1294,27 @@ for _, prop in ipairs({ "sub-pos", "sub-margin-x", "sub-margin-y", "sub-align-x"
 	end)
 end
 mp.register_event("file-loaded", function()
+	ocr.reset()
 	timeline.on_file_loaded()
 end)
 mp.add_periodic_timer(0.05, on_tick)
 mp.add_periodic_timer(15, function()
 	mp.add_key_binding(opts.key_cycle_mode, "cycle_mode", cycle_mode)
 	mp.add_key_binding(opts.key_show_translation, "show_translation", manual_show)
+	if opts.key_ocr and opts.key_ocr ~= "" then
+		mp.add_key_binding(opts.key_ocr, "ocr_now", ocr_now)
+	end
 	mp.add_key_binding(opts.key_settings_menu, "open_settings", open_search_menu)
 	mp.add_key_binding(opts.key_dict_box, "open_search", open_search_box)
 	mp.add_key_binding(opts.key_translate_box, "open_translate", open_translate_box)
 end)
 mp.register_event("shutdown", function()
 	providers.cancel_requests()
+	ocr.cancel()
+	if ocr_hide_timer then
+		ocr_hide_timer:kill()
+		ocr_hide_timer = nil
+	end
 	cache.save_now()
 	timeline.reset()
 	dict_bindings_deactivate()
@@ -1110,7 +1323,7 @@ mp.register_event("shutdown", function()
 	render.clear_popup()
 end)
 
-local VERSION = "0.9.2"
+local VERSION = "0.15.1"
 
 log("subtitle-translate v" .. VERSION)
 log(
@@ -1132,6 +1345,10 @@ log(
 		.. opts.key_dict_box
 		.. " translate="
 		.. opts.key_translate_box
+		.. " ocr="
+		.. opts.key_ocr
+		.. " ocr_backend="
+		.. opts.ocr_backend
 		.. ")"
 )
 
