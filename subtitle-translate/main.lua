@@ -17,9 +17,9 @@ local opts = {
 	-- keys, all rebindable, empty unbinds
 	key_cycle_mode = "Alt+t",
 	key_show_translation = "Ctrl+y",
-	key_settings_menu = "Alt+T",
-	key_dict_box = "Alt+d",
-	key_translate_box = "Alt+D",
+	key_settings_menu = "Alt+m",
+	key_dict_box = "Alt+k",
+	key_translate_box = "Alt+K",
 	key_search_word = "", -- deprecated alias of key_dict_box
 	key_ocr = "Alt+y",
 
@@ -154,7 +154,7 @@ for key, path_opt in pairs(SECRET_PATHS) do
 end
 
 -- deprecated alias: key_search_word -> key_dict_box
-if opts.key_search_word ~= "" and opts.key_dict_box == "Alt+d" then
+if opts.key_search_word ~= "" and opts.key_dict_box == "Alt+k" then
 	opts.key_dict_box = opts.key_search_word
 end
 
@@ -198,6 +198,14 @@ local hover = {
 	osd_h = nil,
 	built_at = nil,
 }
+
+local hover_mute_until = 0
+local HOVER_MUTE_SECS = 1.2
+
+-- close-stickiness: manual close mutes hover popups briefly
+local function mute_hover()
+	hover_mute_until = mp.get_time() + HOVER_MUTE_SECS
+end
 
 local saved_sub_props = nil
 
@@ -459,6 +467,9 @@ local function tick_hover()
 	if trbox then
 		return
 	end
+	if mp.get_time() < hover_mute_until then
+		return
+	end
 	local had_ui = hover.layout ~= nil or hover.idx ~= nil
 	local lay = ensure_hover_layout()
 	if not lay then
@@ -526,6 +537,9 @@ local function tick_hover()
 end
 
 show_word_popup = function(word, mx, my)
+	if mp.get_time() < hover_mute_until then
+		return
+	end
 	local wd = hover.layout and hover.layout.words and hover.layout.words[hover.idx]
 	local rect = nil
 	if wd and wd.x and wd.w and wd.h and opts.hover_backend ~= "native" then
@@ -689,27 +703,40 @@ local function clear_provisional()
 	end
 end
 
--- pinned popups dismiss on ESC/Enter/click
+-- pinned popups dismiss on any key / click; mpv lacks single any-key hook
+-- any_unicode covers all text keys in one bind; small tables cover special keys + mouse
 local dismiss_armed = false
-local DISMISS_BINDINGS = {
-	"st_dismiss_esc",
-	"st_dismiss_enter",
-	"st_dismiss_kpenter",
-	"st_dismiss_mleft",
-	"st_dismiss_mmid",
-	"st_dismiss_mright",
+local dismiss_names = {}
+local DISMISS_KEYS = {
+	"ESC",
+	"ENTER",
+	"KP_ENTER",
+	"BS",
+	"DEL",
+	"SPACE",
+	"TAB",
+	"UP",
+	"DOWN",
+	"LEFT",
+	"RIGHT",
+	"PGUP",
+	"PGDWN",
+	"HOME",
+	"END",
 }
+local DISMISS_MOUSE = { "MBTN_LEFT", "MBTN_MID", "MBTN_RIGHT" }
 
 local function dismiss_deactivate()
 	if not dismiss_armed then
 		return
 	end
 	dismiss_armed = false
-	for _, name in ipairs(DISMISS_BINDINGS) do
+	for _, name in ipairs(dismiss_names) do
 		pcall(function()
 			mp.remove_key_binding(name)
 		end)
 	end
+	dismiss_names = {}
 end
 
 local function dismiss_popup()
@@ -726,20 +753,40 @@ local function sync_dismiss()
 	local want = search.is_pinned() or translate.is_pinned()
 	if want and not dismiss_armed then
 		dismiss_armed = true
-		mp.add_key_binding("ESC", "st_dismiss_esc", dismiss_popup)
-		mp.add_key_binding("ENTER", "st_dismiss_enter", dismiss_popup)
-		mp.add_key_binding("KP_ENTER", "st_dismiss_kpenter", dismiss_popup)
-		if state ~= "dict" then
-			mp.add_key_binding("MBTN_LEFT", "st_dismiss_mleft", dismiss_popup)
+		dismiss_names = {}
+		for _, key in ipairs(DISMISS_KEYS) do
+			local name = "st_dismiss_" .. key
+			dismiss_names[#dismiss_names + 1] = name
+			pcall(function()
+				mp.add_forced_key_binding(key, name, dismiss_popup)
+			end)
 		end
-		mp.add_key_binding("MBTN_MID", "st_dismiss_mmid", dismiss_popup)
-		mp.add_key_binding("MBTN_RIGHT", "st_dismiss_mright", dismiss_popup)
+		dismiss_names[#dismiss_names + 1] = "st_dismiss_unicode"
+		mp.add_forced_key_binding("any_unicode", "st_dismiss_unicode", function(ev)
+			if ev and (ev.event == "press" or ev.event == "down" or ev.event == "repeat") then
+				dismiss_popup()
+			end
+		end, { complex = true })
+		for _, key in ipairs(DISMISS_MOUSE) do
+			-- dict LEFT handled inside word_click via early dismiss
+			if key ~= "MBTN_LEFT" or state ~= "dict" then
+				local name = "st_dismiss_" .. key
+				dismiss_names[#dismiss_names + 1] = name
+				pcall(function()
+					mp.add_forced_key_binding(key, name, dismiss_popup)
+				end)
+			end
+		end
 	elseif not want and dismiss_armed then
 		dismiss_deactivate()
 	end
 end
 
 local function word_click()
+	if search.is_pinned() or translate.is_pinned() then
+		dismiss_popup()
+		return
+	end
 	if state ~= "dict" or not hover.idx or not hover.layout or not hover.layout.words then
 		return
 	end
@@ -1033,7 +1080,7 @@ local function ocr_now()
 	ocr.recognize_now(function(text, info, err)
 		if err then
 			if err == "ocr busy" then
-				notify("OCR still running — please wait, do not press again")
+				notify("OCR still running")
 			else
 				notify("OCR failed: " .. tostring(err))
 			end
@@ -1193,11 +1240,26 @@ mp.register_script_message("show-translation", manual_show)
 mp.register_script_message("ocr-now", ocr_now)
 mp.register_script_message("ocr-check", ocr_check)
 
-mp.add_key_binding(opts.key_cycle_mode, "cycle_mode", cycle_mode)
-mp.add_key_binding(opts.key_show_translation, "show_translation", manual_show)
-if opts.key_ocr and opts.key_ocr ~= "" then
-	mp.add_key_binding(opts.key_ocr, "ocr_now", ocr_now)
+-- forced: stale twin (HM-bundled copy) binds same keys normally; forced wins
+-- so worktree owns keys; empty opt still unbinds
+local function bind_action(key, name, fn)
+	if not key or key == "" then
+		return
+	end
+	pcall(function()
+		-- complex + repeat/up dropped: held hotkey never strobes toggle
+		mp.add_forced_key_binding(key, name, function(ev)
+			if ev and (ev.event == "repeat" or ev.event == "up") then
+				return
+			end
+			fn()
+		end, { complex = true })
+	end)
 end
+
+bind_action(opts.key_cycle_mode, "cycle_mode", cycle_mode)
+bind_action(opts.key_show_translation, "show_translation", manual_show)
+bind_action(opts.key_ocr, "ocr_now", ocr_now)
 
 menu.init(opts, {
 	notify = notify,
@@ -1231,7 +1293,6 @@ menu.init(opts, {
 		end
 	end,
 })
-mp.add_key_binding(opts.key_settings_menu, "open_settings", open_search_menu)
 
 search.init(opts, {
 	notify = notify,
@@ -1247,13 +1308,13 @@ search.init(opts, {
 	end,
 	close_popup = render.clear_popup,
 	pin_changed = sync_dismiss,
+	hover_mute = mute_hover,
 	subtitle_words = subtitle_words,
 	subtitle_phrases = subtitle_phrases,
 	history_words = function()
 		return search_history
 	end,
 })
-mp.add_key_binding(opts.key_dict_box, "open_search", open_search_box)
 
 translate.init(opts, {
 	notify = notify,
@@ -1275,6 +1336,38 @@ translate.init(opts, {
 	end,
 })
 
+-- sloppy Alt-chords can flash bare key through mpv (e.g. d toggles
+-- deinterlace) just before box opens; snapshot + restore neutralizes it
+local function guard_deinterlace(still_open)
+	local ok_before, before = pcall(mp.get_property, "deinterlace")
+	if not ok_before then
+		return
+	end
+	local function restore_if_flipped()
+		if not still_open() then
+			return
+		end
+		local ok_now, now = pcall(mp.get_property, "deinterlace")
+		if ok_now and now ~= before then
+			pcall(mp.set_property, "deinterlace", before)
+		end
+	end
+	mp.add_timeout(0.12, restore_if_flipped)
+	mp.add_timeout(0.6, restore_if_flipped)
+end
+
+-- tail of chord feeds echo guard (Alt+k -> k); non-text binds yield nil
+local function base_key(binding)
+	if type(binding) ~= "string" then
+		return nil
+	end
+	local tail = util.trim(binding:match("[^+]+$") or "")
+	if #tail == 1 then
+		return tail
+	end
+	return nil
+end
+
 open_search_menu = function()
 	search.close()
 	menu.open()
@@ -1283,18 +1376,28 @@ end
 open_search_box = function()
 	menu.close()
 	translate.close()
-	search.open()
+	render.clear_popup()
+	search.open(base_key(opts.key_dict_box))
+	guard_deinterlace(function()
+		return search.is_open()
+	end)
 end
 
 open_translate_box = function()
 	menu.close()
 	search.close()
-	translate.open()
+	if trbox then
+		clear_trbox_ui()
+	end
+	translate.open(base_key(opts.key_translate_box))
+	guard_deinterlace(function()
+		return translate.is_open()
+	end)
 end
 
-mp.add_key_binding(opts.key_settings_menu, "open_settings", open_search_menu)
-mp.add_key_binding(opts.key_dict_box, "open_search", open_search_box)
-mp.add_key_binding(opts.key_translate_box, "open_translate", open_translate_box)
+bind_action(opts.key_settings_menu, "open_settings", open_search_menu)
+bind_action(opts.key_dict_box, "open_search", open_search_box)
+bind_action(opts.key_translate_box, "open_translate", open_translate_box)
 mp.register_script_message("open-settings", open_search_menu)
 mp.register_script_message("open-search", open_search_box)
 mp.register_script_message("open-translate", open_translate_box)
@@ -1334,16 +1437,6 @@ mp.register_event("file-loaded", function()
 	timeline.on_file_loaded()
 end)
 mp.add_periodic_timer(0.05, on_tick)
-mp.add_periodic_timer(15, function()
-	mp.add_key_binding(opts.key_cycle_mode, "cycle_mode", cycle_mode)
-	mp.add_key_binding(opts.key_show_translation, "show_translation", manual_show)
-	if opts.key_ocr and opts.key_ocr ~= "" then
-		mp.add_key_binding(opts.key_ocr, "ocr_now", ocr_now)
-	end
-	mp.add_key_binding(opts.key_settings_menu, "open_settings", open_search_menu)
-	mp.add_key_binding(opts.key_dict_box, "open_search", open_search_box)
-	mp.add_key_binding(opts.key_translate_box, "open_translate", open_translate_box)
-end)
 mp.register_event("shutdown", function()
 	providers.cancel_requests()
 	ocr.cancel()
@@ -1359,7 +1452,7 @@ mp.register_event("shutdown", function()
 	render.clear_popup()
 end)
 
-local VERSION = "0.15.1"
+local VERSION = "0.15.2"
 
 log("subtitle-translate v" .. VERSION)
 log(

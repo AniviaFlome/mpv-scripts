@@ -14,9 +14,9 @@ mpv script that translates subtitles on screen. Hover a word for a dictionary po
 | `Alt+t` | Cycle modes: off → hover dictionary → on-demand panel → always-on panel |
 | `Alt+y` | OCR current frame (hardsubs); press again to hide |
 | `Ctrl+y` | Pin the mode 2 panel until the subtitle changes |
-| `Alt+T` | Session-only settings menu |
-| `Alt+d` | Dictionary search |
-| `Alt+D` | Free-text translation |
+| `Alt+m` | Session-only settings menu |
+| `Alt+k` | Dictionary search |
+| `Alt+K` | Free-text translation |
 
 ## Options
 
@@ -27,11 +27,11 @@ Keys
 | Option | Default | Description |
 | --- | --- | --- |
 | `key_cycle_mode` | `Alt+t` | |
-| `key_dict_box` | `Alt+d` | |
+| `key_dict_box` | `Alt+k` | |
 | `key_ocr` | `Alt+y` | |
-| `key_settings_menu` | `Alt+T` | |
+| `key_settings_menu` | `Alt+m` | |
 | `key_show_translation` | `Ctrl+y` | |
-| `key_translate_box` | `Alt+D` | |
+| `key_translate_box` | `Alt+K` | |
 
 Translation
 
@@ -208,3 +208,11 @@ prefetch_concurrency=2
 
 ocr_backend=tesseract
 ```
+
+## Troubleshooting
+
+Duplicate instances: home-manager `programs.mpv.scripts` bundling plus a
+`--script=` worktree flag loads two copies at once (stale overlay wins
+races: seeded query, missing suggestions, accent header). Keep one source:
+either drop the bundled entry or drop the `--script` flag. Confirm single
+load via the terminal line `subtitle-translate vX.Y.Z` (exactly one).

@@ -20,7 +20,8 @@ function M.cancel_requests() end
 local function http_request(def, cb)
 	req_seq = req_seq + 1
 	local seq = req_seq
-	local args = { "curl", "-sS", "-L", "--compressed", "--max-time", "10", "-A", def.ua or NEUTRAL_UA }
+	local tm = tonumber(def.timeout) or 10
+	local args = { "curl", "-sS", "-L", "--compressed", "--max-time", tostring(tm), "-A", def.ua or NEUTRAL_UA }
 	if def.headers then
 		for _, header in ipairs(def.headers) do
 			args[#args + 1] = "-H"
@@ -478,12 +479,14 @@ local function parse_tureng(body)
 			local cat = util.html_unescape(util.html_unescape(util.strip_tags(raw_cells[2])))
 			local typ = raw_cells[3]:match("<i[^>]*>(.-)</i>")
 			typ = typ and util.trim(util.html_unescape(util.html_unescape(util.strip_tags(typ)))) or ""
+			local head_src = raw_cells[3]:gsub("<i[^>]*>.-</i>", "")
+			local head = util.html_unescape(util.html_unescape(util.strip_tags(head_src)))
 			local term_src = raw_cells[4]:match("<a[^>]->(.-)</a>") or raw_cells[4]
 			local term = util.html_unescape(util.html_unescape(util.strip_tags(term_src)))
 			local key = term .. "|" .. typ .. "|" .. cat
 			if term ~= "" and not seen[key] and not term:match("^[%d%s.,%-]+$") then
 				seen[key] = true
-				entries[#entries + 1] = { cat = cat, typ = typ, term = term }
+				entries[#entries + 1] = { cat = cat, typ = typ, term = term, src = head }
 				if #entries >= 24 then
 					break
 				end
@@ -578,10 +581,27 @@ local function parse_cambridge_suggest(body)
 	if type(data) ~= "table" then
 		return nil
 	end
+	-- amp endpoint returns array of {word=...}; accept strings + common wrappers
+	local list = data
+	if type(data.results) == "table" then
+		list = data.results
+	elseif type(data.predictions) == "table" then
+		list = data.predictions
+	elseif type(data.suggestions) == "table" then
+		list = data.suggestions
+	end
+	if type(list) ~= "table" then
+		return nil
+	end
 	local out = {}
-	for _, item in ipairs(data) do
-		if type(item) == "table" and type(item.word) == "string" and item.word ~= "" then
-			out[#out + 1] = item.word
+	for _, item in ipairs(list) do
+		if type(item) == "string" and item ~= "" then
+			out[#out + 1] = item
+		elseif type(item) == "table" then
+			local w = item.word or item.text or item.title or item.suggestion
+			if type(w) == "string" and w ~= "" then
+				out[#out + 1] = w
+			end
 		end
 		if #out >= 15 then
 			break
@@ -613,12 +633,17 @@ local function parse_wiktionary_suggest(body)
 	return out
 end
 
-local function cambridge_suggest(prefix, cb)
-	local dir = (opts.lang_from == "tr") and "turkish-english" or "english-turkish"
+local function cambridge_fetch_dataset(dataset, prefix, cb)
 	http_request({
-		url = "https://dictionary.cambridge.org/autocomplete/amp?dataset=" .. dir .. "&q=" .. util.url_encode(prefix),
-		method_label = "cambridge suggest",
+		url = "https://dictionary.cambridge.org/autocomplete/amp?dataset=" .. dataset .. "&q=" .. util.url_encode(prefix),
+		method_label = "cambridge suggest " .. dataset,
 		ua = BROWSER_UA,
+		timeout = 6,
+		headers = {
+			"Referer: https://dictionary.cambridge.org/",
+			"Accept: application/json",
+			"Accept-Language: en-US,en;q=0.9",
+		},
 	}, function(resp, err)
 		if not resp then
 			cb(nil, err)
@@ -628,12 +653,53 @@ local function cambridge_suggest(prefix, cb)
 	end)
 end
 
+local function cambridge_suggest(prefix, cb)
+	-- english-turkish set thin for some prefixes; merge with monolingual english set
+	-- turkish->english autocomplete unsupported upstream; returns empty fast
+	local primary = (opts.lang_from == "tr") and "turkish-english" or "english-turkish"
+	cambridge_fetch_dataset(primary, prefix, function(first)
+		if primary == "english" then
+			cb(first)
+			return
+		end
+		cambridge_fetch_dataset("english", prefix, function(second)
+			if not first or #first == 0 then
+				cb(second)
+				return
+			end
+			if not second or #second == 0 then
+				cb(first)
+				return
+			end
+			local seen = {}
+			local out = {}
+			for _, w in ipairs(first) do
+				if not seen[w] then
+					seen[w] = true
+					out[#out + 1] = w
+				end
+			end
+			for _, w in ipairs(second) do
+				if not seen[w] then
+					seen[w] = true
+					out[#out + 1] = w
+				end
+				if #out >= 15 then
+					break
+				end
+			end
+			cb(out)
+		end)
+	end)
+end
+
 local function wiktionary_suggest(prefix, cb)
 	http_request({
 		url = "https://en.wiktionary.org/w/api.php?action=opensearch&search="
 			.. util.url_encode(prefix)
 			.. "&limit=15&namespace=0&format=json",
 		method_label = "wiktionary suggest",
+		timeout = 6,
 	}, function(resp, err)
 		if not resp then
 			cb(nil, err)
@@ -641,6 +707,88 @@ local function wiktionary_suggest(prefix, cb)
 		end
 		cb(parse_wiktionary_suggest(resp))
 	end)
+end
+
+-- tureng lacks public autocomplete; scrape result page terms for prefix matches
+local function tureng_suggest(prefix, cb)
+	local single = prefix:match("^(%S+)$")
+	if not single or #single < 2 then
+		cb(nil)
+		return
+	end
+	local url = "https://tureng.com/en/turkish-english/" .. util.url_encode(single)
+	http_request({
+		url = url,
+		method_label = "tureng suggest",
+		ua = BROWSER_UA,
+		timeout = 6,
+		headers = {
+			"Referer: https://tureng.com/",
+			"Accept-Language: en-US,en;q=0.9",
+		},
+	}, function(body, err)
+		if not body then
+			cb(nil, err)
+			return
+		end
+		if body:find("_cf_chl_opt", 1, true) or body:find("Just a moment", 1, true) then
+			if opts.verbose then
+				util.log("tureng suggest: cloudflare challenge, fallback")
+			end
+			cb(nil)
+			return
+		end
+		local res = parse_tureng(body)
+		if not res or not res.entries then
+			cb(nil)
+			return
+		end
+		local q = single:lower()
+		local seen = {}
+		local out = {}
+		for _, e in ipairs(res.entries) do
+			for _, cand in ipairs({ e.src, e.term }) do
+				local word = util.trim(cand or "")
+				if word ~= "" and not seen[word] and word:lower():sub(1, #q) == q then
+					seen[word] = true
+					out[#out + 1] = word
+					if #out >= 15 then
+						break
+					end
+				end
+			end
+			if #out >= 15 then
+				break
+			end
+		end
+		if #out == 0 then
+			cb(nil)
+			return
+		end
+		cb(out)
+	end)
+end
+
+local suggest_cache = {}
+local SUGGEST_CACHE_MAX = 200
+
+local function suggest_cache_get(key)
+	local hit = suggest_cache[key]
+	if hit and mp.get_time() - hit.at < 120 then
+		return hit.items
+	end
+	return nil
+end
+
+local function suggest_cache_set(key, items)
+	suggest_cache[key] = { at = mp.get_time(), items = items }
+	local n = 0
+	for _ in pairs(suggest_cache) do
+		n = n + 1
+	end
+	if n > SUGGEST_CACHE_MAX then
+		suggest_cache = {}
+	end
 end
 
 -- nil = no suggestions, direct lookup
@@ -651,12 +799,63 @@ function M.suggest(prefix, cb)
 		cb({})
 		return
 	end
+	local cache_key = source .. "|" .. prefix:lower()
+	local cached = suggest_cache_get(cache_key)
+	if cached then
+		cb(cached)
+		return
+	end
+	local function done(items, err)
+		if opts.verbose and (not items or #items == 0) then
+			util.log("suggest: no candidates (" .. source .. "): " .. prefix)
+		end
+		if items and #items > 0 then
+			suggest_cache_set(cache_key, items)
+			cb(items, err)
+		else
+			cb(items, err)
+		end
+	end
+	-- provider hits + wiktionary always UNIONed: thin provider lists enrich instead of blocking fallback
+	local function with_wiktionary_union(first)
+		wiktionary_suggest(prefix, function(second)
+			local seen = {}
+			local out = {}
+			for _, w in ipairs(first or {}) do
+				if w ~= "" and not seen[w] then
+					seen[w] = true
+					out[#out + 1] = w
+				end
+			end
+			for _, w in ipairs(second or {}) do
+				if w ~= "" and not seen[w] then
+					seen[w] = true
+					out[#out + 1] = w
+				end
+				if #out >= 15 then
+					break
+				end
+			end
+			if #out > 0 then
+				done(out)
+			else
+				done(first)
+			end
+		end)
+	end
 	if source == "cambridge" then
-		cambridge_suggest(prefix, cb)
+		cambridge_suggest(prefix, with_wiktionary_union)
 	elseif source == "wiktionary" then
-		wiktionary_suggest(prefix, cb)
+		wiktionary_suggest(prefix, function(items, err)
+			done(items, err)
+		end)
+	elseif source == "tureng" then
+		tureng_suggest(prefix, with_wiktionary_union)
 	else
-		cb(nil)
+		-- reverso + unknown: generic fallback only
+		wiktionary_suggest(prefix, function(items, err)
+			done(items, err)
+		end)
 	end
 end
 

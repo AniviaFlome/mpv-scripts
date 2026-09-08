@@ -8,8 +8,15 @@ local opts = nil
 local actions = {}
 local overlay = nil
 
-local FETCH_DEBOUNCE = 0.25
+local FETCH_DEBOUNCE = 0.15
 local MAX_ITEMS = 12
+local TEXT_BIND_DELAY = 0.25
+local OPEN_DEBOUNCE = 0.3
+local SUPPRESS_WINDOW = 0.6
+local bind_timer = nil
+local last_open_at = 0
+local suppress_char = nil
+local suppress_until = 0
 
 local pinned = false
 local is_open = false
@@ -75,6 +82,11 @@ local function rebuild_local()
 	local_items = out
 end
 
+local function fold(s)
+	s = s:gsub("İ", "i"):gsub("I", "ı"):gsub("Ç", "ç"):gsub("Ğ", "ğ"):gsub("Ö", "ö"):gsub("Ş", "ş"):gsub("Ü", "ü")
+	return s:lower()
+end
+
 local function display_items()
 	local seen = {}
 	local out = {}
@@ -85,20 +97,34 @@ local function display_items()
 		seen[word] = true
 		out[#out + 1] = word
 	end
-	local q = util.trim(query or ""):lower()
-	if query ~= "" then
-		add(util.trim(query))
+	local raw_q = util.trim(query or "")
+	local q = fold(raw_q)
+	if raw_q ~= "" then
+		add(raw_q)
 	end
-	local function matches(w)
-		return q == "" or w:lower():sub(1, #q) == q
+	local function starts(w)
+		return q == "" or fold(w):sub(1, #q) == q
+	end
+	local function contains(w)
+		return q ~= "" and fold(w):find(q, 1, true) ~= nil
 	end
 	for _, w in ipairs(local_items) do
-		if matches(w) then
+		if starts(w) then
 			add(w)
 		end
 	end
 	for _, w in ipairs(remote_items) do
-		if matches(w) then
+		if starts(w) then
+			add(w)
+		end
+	end
+	for _, w in ipairs(local_items) do
+		if not starts(w) and contains(w) then
+			add(w)
+		end
+	end
+	for _, w in ipairs(remote_items) do
+		if not starts(w) and contains(w) then
 			add(w)
 		end
 	end
@@ -268,6 +294,19 @@ local function on_move(dir)
 	render()
 end
 
+local last_move_at = 0
+local MOVE_THROTTLE = 0.09
+
+-- hold-repeat arrives hot; throttle keeps single speed sane
+local function on_move_throttled(dir)
+	local now = mp.get_time()
+	if now - last_move_at < MOVE_THROTTLE then
+		return
+	end
+	last_move_at = now
+	on_move(dir)
+end
+
 local function on_enter()
 	local items = display_items()
 	if items[selected] then
@@ -297,6 +336,8 @@ end
 
 local BINDINGS = {
 	"st_search_text",
+	"st_search_minus",
+	"st_search_kpsub",
 	"st_search_bs",
 	"st_search_enter",
 	"st_search_kpenter",
@@ -311,6 +352,10 @@ close_ui = function()
 		fetch_timer:kill()
 		fetch_timer = nil
 	end
+	if bind_timer then
+		bind_timer:kill()
+		bind_timer = nil
+	end
 	for _, name in ipairs(BINDINGS) do
 		pcall(function()
 			mp.remove_key_binding(name)
@@ -319,37 +364,91 @@ close_ui = function()
 	if overlay then
 		overlay:remove()
 	end
+	if actions.hover_mute then
+		pcall(actions.hover_mute)
+	end
 	is_open = false
 end
 
-local function open_ui()
+local function bind_text_input()
+	if not is_open then
+		return
+	end
+	-- repeats dropped: held trigger chord must never seed query; fresh presses only
+	-- trigger echo dropped: leading char matching bound key dies inside window
+	mp.add_forced_key_binding("any_unicode", "st_search_text", function(ev)
+		if ev and (ev.event == "press" or ev.event == "down") and ev.key_text then
+			if
+				suppress_char
+				and mp.get_time() < suppress_until
+				and query == ""
+				and fold(ev.key_text) == fold(suppress_char)
+			then
+				suppress_char = nil
+				return
+			end
+			suppress_char = nil
+			on_text(ev.key_text)
+		end
+	end, { complex = true })
+	pcall(function()
+		mp.add_forced_key_binding("-", "st_search_minus", function()
+			on_text("-")
+		end, { repeatable = true })
+	end)
+	pcall(function()
+		mp.add_forced_key_binding("KP_SUBTRACT", "st_search_kpsub", function()
+			on_text("-")
+		end, { repeatable = true })
+	end)
+end
+
+local function open_ui(trigger)
+	-- bounce guard: key repeat / double-fire never strobes box
+	local now = mp.get_time()
+	if now - last_open_at < OPEN_DEBOUNCE then
+		return
+	end
+	last_open_at = now
+	-- trigger echo guard: bound key tail (Alt+k -> k) never seeds query
+	suppress_char = nil
+	suppress_until = 0
+	if type(trigger) == "string" and #trigger == 1 then
+		suppress_char = trigger
+		suppress_until = now + SUPPRESS_WINDOW
+	end
 	query = ""
 	selected = 1
 	remote_items = {}
 	last_fetched = nil
 	rebuild_local()
 	is_open = true
-	mp.add_forced_key_binding("any_unicode", "st_search_text", function(ev)
-		if ev and (ev.event == "press" or ev.event == "down" or ev.event == "repeat") and ev.key_text then
-			on_text(ev.key_text)
-		end
-	end, { complex = true })
+	-- controls live at once so ESC/click feel instant; text binds land after
+	-- delay so trigger tail never seeds query regardless bound key
 	mp.add_forced_key_binding("BS", "st_search_bs", on_backspace, { repeatable = true })
 	mp.add_forced_key_binding("ENTER", "st_search_enter", on_enter)
 	mp.add_forced_key_binding("KP_ENTER", "st_search_kpenter", on_enter)
 	mp.add_forced_key_binding("ESC", "st_search_esc", close_ui)
 	mp.add_forced_key_binding("UP", "st_search_up", function()
-		on_move(-1)
+		on_move_throttled(-1)
 	end, { repeatable = true })
 	mp.add_forced_key_binding("DOWN", "st_search_down", function()
-		on_move(1)
+		on_move_throttled(1)
 	end, { repeatable = true })
 	-- shadow dict clicks while open
 	mp.add_forced_key_binding("MBTN_LEFT", "st_search_click", on_click)
+	if bind_timer then
+		bind_timer:kill()
+		bind_timer = nil
+	end
+	bind_timer = mp.add_timeout(TEXT_BIND_DELAY, function()
+		bind_timer = nil
+		bind_text_input()
+	end)
 	render()
 end
 
-function M.open()
+function M.open(trigger)
 	if not overlay then
 		notify("word search unavailable")
 		return
@@ -366,11 +465,15 @@ function M.open()
 		close_ui()
 		return
 	end
-	open_ui()
+	open_ui(trigger)
 end
 
 function M.is_pinned()
 	return pinned
+end
+
+function M.is_open()
+	return is_open
 end
 
 function M.close()

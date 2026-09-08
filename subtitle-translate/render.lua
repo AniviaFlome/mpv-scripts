@@ -320,6 +320,8 @@ local function render_popup_panel(display, header, anchor)
 			.. util.ass_escape(header)
 			.. "{\\fs"
 			.. fs
+			.. "\\1c"
+			.. util.ass_color(opts.color_text)
 			.. "\\b0\\bord"
 			.. math.max(1, math.floor(opts.outline_width * h / 1080 + 0.5))
 			.. "}"
@@ -329,14 +331,16 @@ local function render_popup_panel(display, header, anchor)
 			parts[#parts + 1] = "{\\fs"
 				.. header_fs
 				.. "\\1c"
-				.. util.ass_color(opts.accent)
+				.. util.ass_color(opts.color_text)
 				.. "\\b1\\bord0}"
-				.. util.ass_escape(d.text)
-				.. "{\\fs"
-				.. fs
-				.. "\\b0\\bord"
-				.. math.max(1, math.floor(opts.outline_width * h / 1080 + 0.5))
-				.. "}"
+			.. util.ass_escape(d.text)
+			.. "{\\fs"
+			.. fs
+			.. "\\1c"
+			.. util.ass_color(opts.color_text)
+			.. "\\b0\\bord"
+			.. math.max(1, math.floor(opts.outline_width * h / 1080 + 0.5))
+			.. "}"
 		elseif d.kind == "group" then
 			parts[#parts + 1] = "{\\fs"
 				.. group_fs
